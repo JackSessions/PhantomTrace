@@ -1,0 +1,18 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "phantom-trace"
+version = "0.3.0"
+description = "Read-only NTFS cross-layer consistency checker for DFIR"
+readme = "README.md"
+requires-python = ">=3.9"
+keywords = ["dfir", "forensics", "ntfs", "anti-forensics"]
+classifiers = ["Topic :: Security", "Intended Audience :: Information Technology", "Operating System :: OS Independent"]
+
+[project.scripts]
+phantom-trace = "phantom_trace:main"
+
+[tool.setuptools]
+py-modules = ["phantom_trace"]

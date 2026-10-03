@@ -15,12 +15,16 @@ Only the Python 3 standard library is used. Exit codes: 0 clean, 1 findings, 2 e
 from __future__ import annotations
 
 import argparse
+import csv
+import html
 import json
+import os
 import struct
 import sys
+import time
 from dataclasses import dataclass, field
 
-__version__ = "0.2.0"
+__version__ = "0.3.0"
 FIXUP_STRIDE = 512
 MFT_REC_MFT, MFT_REC_MIRR, MFT_REC_BITMAP = 0, 1, 6
 ATTR_ATTRLIST, ATTR_FILENAME, ATTR_DATA, ATTR_BITMAP, ATTR_END = 0x20, 0x30, 0x80, 0xB0, 0xFFFFFFFF
@@ -249,13 +253,15 @@ class Finding:
                 "why": WHY[self.check], "detail": self.detail}
 
 
-def analyse(fs: Ntfs) -> list[Finding]:
+def analyse(fs: Ntfs, progress=None) -> list[Finding]:
     out: list[Finding] = []
     for w in fs.warnings:
         out.append(Finding("parse_warning", w))
     vbm = fs.volume_bitmap()
     intervals: list[tuple[int, int, int]] = []     # (start, end_exclusive, record)
     for i, raw, rec in fs.records():
+        if progress and i % 256 == 0:
+            progress(i, fs.n_records)
         flag_used = rec.in_use if rec else False
         bm_used = bit(fs.mft_bitmap, i)
         if rec is None:
@@ -307,52 +313,134 @@ def analyse(fs: Ntfs) -> list[Finding]:
     return out
 
 
-def report_text(fs: Ntfs, findings: list[Finding], limit: int) -> str:
-    lines = [f"PhantomTrace {__version__}", f"  cluster {fs.cluster} B | MFT record {fs.rec_size} B | {fs.n_records} MFT records | {fs.total_clusters} clusters", ""]
-    if not findings:
-        lines.append("No cross-layer inconsistencies found.")
-        return "\n".join(lines)
-    order = {"high": 0, "medium": 1, "low": 2}
+class Style:
+    """ANSI colour that switches itself off for pipes, NO_COLOR and --no-color."""
+    CODES = {"red": "31;1", "yellow": "33;1", "cyan": "36", "green": "32;1", "dim": "2", "bold": "1", "mag": "35;1"}
+
+    def __init__(self, on: bool): self.on = on
+    def __call__(self, name: str, text: str) -> str: return f"\x1b[{self.CODES[name]}m{text}\x1b[0m" if self.on else text
+
+
+SEV_COLOR = {"high": "red", "medium": "yellow", "low": "cyan"}
+BANNER = r"""
+  ___ _                 _               _____
+ | _ \ |_  __ _ _ _  __| |_ ___ _ __   |_   _| _ __ _ __ ___
+ |  _/ ' \/ _` | ' \/ _|  _/ _ \ '  \    | || '_/ _` / _/ -_)
+ |_| |_||_\__,_|_||_\__|\__\___/_|_|_|   |_||_| \__,_\__\___|
+"""
+
+
+def verdict(findings: list[Finding]) -> tuple[str, str]:
+    high = sum(f.severity == "high" for f in findings); med = sum(f.severity == "medium" for f in findings)
+    if high:
+        return "red", f"{high} high-severity inconsistenc{'y' if high == 1 else 'ies'} found. Verify with a second tool before drawing conclusions."
+    if med:
+        return "yellow", f"{med} medium-severity issue(s) found."
+    if findings:
+        return "cyan", "Only low-confidence notes."
+    return "green", "No cross-layer inconsistencies found."
+
+
+def report_text(fs: Ntfs, findings: list[Finding], limit: int, st: Style, target: str = "", elapsed: float = 0.0, quiet: bool = False) -> str:
+    L: list[str] = []
+    if not quiet:
+        L.append(st("mag", BANNER.rstrip("\n")))
+        L.append(st("dim", f"  v{__version__}  |  read-only NTFS cross-layer consistency checker"))
+        L.append("")
+        L.append(f"  {st('bold', 'Target ')} {target}")
+        L.append(f"  {st('bold', 'Volume ')} {fs.cluster} B clusters | {fs.rec_size} B MFT records | {fs.n_records} records | {fs.total_clusters} clusters")
+        L.append("")
     shown = 0
-    for sev in ("high", "medium", "low"):
-        group = [f for f in findings if f.severity == sev]
-        if not group:
-            continue
-        lines.append(f"[{sev.upper()}] {len(group)} finding(s)")
-        for f in group:
-            if shown >= limit:
-                break
-            shown += 1
-            lines.append(f"  - {f.message}" + (f"  ({f.name})" if f.name else ""))
-        lines.append("")
-    seen = []
-    for f in sorted(findings, key=lambda x: order[x.severity]):
-        if f.check not in seen:
-            seen.append(f.check)
-    lines.append("What this means:")
-    lines += [f"  * {WHY[c]}" for c in seen]
-    if shown < len(findings):
-        lines.append(f"\n({len(findings) - shown} more not shown; use --max or --json)")
-    return "\n".join(lines)
+    if not quiet:
+        for check in WHY:
+            group = [f for f in findings if f.check == check]
+            if not group:
+                continue
+            sev = SEVERITY[check]
+            L.append(f"  {st(SEV_COLOR[sev], f'[{sev.upper()}]')} {st('bold', check)} {st('dim', f'x{len(group)}')}")
+            for f in group:
+                if shown >= limit:
+                    break
+                shown += 1
+                L.append(f"      {st('dim', chr(0x2022))} {f.message}" + (st("dim", f"  ({f.name})") if f.name else ""))
+            L.append(f"      {st('dim', WHY[check])}")
+            L.append("")
+        if shown < len(findings):
+            L.append(st("dim", f"  ... {len(findings) - shown} more finding(s) not shown (use --max, --json, --csv or --html)"))
+            L.append("")
+    counts = {s: sum(f.severity == s for f in findings) for s in ("high", "medium", "low")}
+    color, msg = verdict(findings)
+    L.append(f"  {st('bold', 'Summary')}  " + "  ".join(st(SEV_COLOR[s], f"{s} {n}") for s, n in counts.items()) + st("dim", f"   ({elapsed:.2f}s)"))
+    L.append(f"  {st(color, 'Verdict')}  {msg}")
+    return "\n".join(L)
+
+
+def report_csv(findings: list[Finding], path: str) -> None:
+    with open(path, "w", newline="") as f:
+        w = csv.writer(f)
+        w.writerow(["severity", "check", "record", "name", "message", "why"])
+        for x in findings:
+            w.writerow([x.severity, x.check, x.record if x.record is not None else "", x.name, x.message, WHY[x.check]])
+
+
+def report_html(fs: Ntfs, findings: list[Finding], target: str) -> str:
+    e = html.escape
+    color, msg = verdict(findings)
+    chip = {"high": "#ff4d5e", "medium": "#ffb02e", "low": "#38d6ff"}
+    rows = "".join(
+        f'<tr><td><span class="chip" style="--c:{chip[f.severity]}">{f.severity}</span></td><td><code>{e(f.check)}</code></td>'
+        f'<td>{"" if f.record is None else f.record}</td><td>{e(f.name)}</td><td>{e(f.message)}<div class="why">{e(WHY[f.check])}</div></td></tr>'
+        for f in sorted(findings, key=lambda x: ("high", "medium", "low").index(x.severity)))
+    counts = "".join(f'<div class="stat" style="--c:{chip[s]}"><b>{sum(f.severity == s for f in findings)}</b><span>{s}</span></div>' for s in ("high", "medium", "low"))
+    verdict_col = {"red": "#ff4d5e", "yellow": "#ffb02e", "cyan": "#38d6ff", "green": "#4af0a2"}[color]
+    return f"""<!doctype html><html lang="en"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>PhantomTrace report</title><style>
+:root{{color-scheme:dark}}body{{margin:0;background:#07090c;color:#d7e3ea;font:15px/1.5 system-ui,sans-serif}}main{{max-width:64rem;margin:0 auto;padding:2rem 1rem 4rem}}
+h1{{font:700 1.6rem ui-monospace,monospace;letter-spacing:.04em;margin:0;color:#e04aff}}small,.why{{color:#7fa7b5}}.why{{font-size:.82rem;margin-top:.3rem}}
+.meta{{margin:.4rem 0 1.4rem;font:13px ui-monospace,monospace;color:#7fa7b5}}.verdict{{border-left:4px solid {verdict_col};padding:.7rem 1rem;background:#0c1116;margin:1rem 0}}
+.stats{{display:flex;gap:.8rem;margin:1rem 0}}.stat{{flex:1;border:1px solid var(--c);border-radius:6px;padding:.6rem;text-align:center}}.stat b{{display:block;font-size:1.6rem;color:var(--c)}}
+table{{width:100%;border-collapse:collapse;margin-top:1rem}}td,th{{text-align:left;padding:.55rem .5rem;border-bottom:1px solid #1c252d;vertical-align:top}}th{{font:12px ui-monospace,monospace;color:#7fa7b5;text-transform:uppercase}}
+.chip{{display:inline-block;border:1px solid var(--c);color:var(--c);border-radius:999px;padding:0 .6rem;font:12px ui-monospace,monospace;text-transform:uppercase}}code{{color:#ffb02e}}
+</style><main><h1>PhantomTrace</h1><div class="meta">v{__version__} | {e(target)} | {fs.cluster} B clusters, {fs.rec_size} B records, {fs.n_records} MFT records, {fs.total_clusters} clusters</div>
+<div class="verdict"><b>Verdict.</b> {e(msg)}</div><div class="stats">{counts}</div>
+<table><tr><th>Severity</th><th>Check</th><th>Record</th><th>Name</th><th>Finding</th></tr>{rows or '<tr><td colspan="5">No findings.</td></tr>'}</table>
+<p><small>Findings are leads, not proof. Confirm with a second tool (for example The Sleuth Kit) before drawing conclusions.</small></p></main></html>"""
 
 
 def main(argv=None) -> int:
-    ap = argparse.ArgumentParser(description="Cross-layer consistency checks for NTFS (read-only).")
+    ap = argparse.ArgumentParser(prog="phantom-trace", description="Cross-layer consistency checks for NTFS (read-only).")
     ap.add_argument("target", help="raw NTFS image, or a device such as /dev/sdb1 or \\\\.\\C: (needs admin/root)")
     ap.add_argument("--offset", type=lambda x: int(x, 0), default=0, help="byte offset of the NTFS partition inside the image")
-    ap.add_argument("--json", action="store_true", help="machine-readable output")
+    ap.add_argument("--json", action="store_true", help="machine-readable output on stdout")
+    ap.add_argument("--csv", metavar="FILE", help="also write findings to a CSV file")
+    ap.add_argument("--html", metavar="FILE", help="also write a self-contained HTML report")
     ap.add_argument("--max", type=int, default=50, help="maximum findings to print in text mode")
+    ap.add_argument("--no-color", action="store_true", help="disable colour (also honours NO_COLOR)")
+    ap.add_argument("-q", "--quiet", action="store_true", help="print only the summary and verdict")
     ap.add_argument("--version", action="version", version=__version__)
     args = ap.parse_args(argv)
+    st = Style(sys.stdout.isatty() and not args.no_color and "NO_COLOR" not in os.environ)
     try:
         with open(args.target, "rb") as fh:
+            t0 = time.time()
             fs = Ntfs(fh, args.offset)
-            findings = analyse(fs)
+            tty = sys.stderr.isatty() and not args.json
+            def progress(i, n):
+                if tty:
+                    sys.stderr.write(f"\r  scanning MFT {i * 100 // max(n, 1)}% ")
+            findings = analyse(fs, progress)
+            if tty:
+                sys.stderr.write("\r" + " " * 30 + "\r")
+            if args.csv:
+                report_csv(findings, args.csv)
+            if args.html:
+                with open(args.html, "w", encoding="utf-8") as hf:
+                    hf.write(report_html(fs, findings, args.target))
             if args.json:
-                print(json.dumps({"version": __version__, "volume": {"cluster_size": fs.cluster, "record_size": fs.rec_size, "records": fs.n_records, "clusters": fs.total_clusters},
+                print(json.dumps({"version": __version__, "target": args.target, "volume": {"cluster_size": fs.cluster, "record_size": fs.rec_size, "records": fs.n_records, "clusters": fs.total_clusters},
                                   "findings": [f.as_dict() for f in findings]}, indent=2))
             else:
-                print(report_text(fs, findings, args.max))
+                print(report_text(fs, findings, args.max, st, args.target, time.time() - t0, args.quiet))
             return 1 if any(f.severity in ("high", "medium") for f in findings) else 0
     except PermissionError:
         print("Permission denied. Run as Administrator/root, or analyse a raw image instead.", file=sys.stderr)

@@ -1,7 +1,11 @@
+import csv
+import io
+import json
 import os
 import shutil
 import tempfile
 import unittest
+from contextlib import redirect_stdout
 
 import images
 import phantom_trace as pt
@@ -41,6 +45,29 @@ class DetectionTests(unittest.TestCase):
         shutil.copy(self.clean, path)
         images.tamper_flag_flip(path)
         self.assertEqual({c for c in checks(path) if pt.SEVERITY[c] == "high"}, {"mft_flag_vs_bitmap"})
+
+    def test_json_csv_and_html_outputs(self):
+        path = os.path.join(self.tmp, "outputs.img")
+        shutil.copy(self.clean, path)
+        images.tamper_bitmap_free(path)
+        out_csv, out_html = os.path.join(self.tmp, "r.csv"), os.path.join(self.tmp, "r.html")
+        buf = io.StringIO()
+        with redirect_stdout(buf):
+            code = pt.main([path, "--json", "--csv", out_csv, "--html", out_html])
+        self.assertEqual(code, 1)
+        data = json.loads(buf.getvalue())
+        self.assertTrue(any(f["check"] == "clusters_free_in_bitmap" for f in data["findings"]))
+        rows = list(csv.DictReader(open(out_csv)))
+        self.assertEqual(rows[0]["severity"], "high")
+        page = open(out_html, encoding="utf-8").read()
+        self.assertIn("clusters_free_in_bitmap", page)
+        self.assertIn("file1.bin", page)
+
+    def test_clean_text_report_says_so(self):
+        buf = io.StringIO()
+        with redirect_stdout(buf):
+            pt.main([self.clean, "--no-color", "-q"])
+        self.assertIn("No cross-layer inconsistencies found", buf.getvalue())
 
     def test_not_ntfs_is_an_error(self):
         path = os.path.join(self.tmp, "junk.img")
