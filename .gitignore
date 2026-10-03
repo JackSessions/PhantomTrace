@@ -67,9 +67,9 @@ htmlcov/
 *.tar.bz2
 *.tar.xz
 *.tar.zst
-```demo/
-__pycache__/
+```__pycache__/
 *.egg-info/
-build/
-dist/
 report.html
+
+# project
+tests/demo/
