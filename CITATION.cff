@@ -6,5 +6,5 @@ authors:
   - name: "Jack Sessions"
 repository-code: "https://github.com/JackSessions/PhantomTrace"
 license: MIT
-version: 0.5.0
-date-released: 2026-10-03
+version: 0.6.0
+date-released: 2026-10-04

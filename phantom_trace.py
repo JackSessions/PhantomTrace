@@ -25,7 +25,7 @@ import time
 from datetime import datetime, timedelta
 from dataclasses import dataclass, field
 
-__version__ = "0.5.0"
+__version__ = "0.6.0"
 __author__ = "Jack Sessions"
 __license__ = "MIT"
 __url__ = "https://github.com/JackSessions/PhantomTrace"

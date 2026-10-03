@@ -1,6 +1,14 @@
 # PhantomTrace
 
+[![PyPI](https://img.shields.io/pypi/v/phantom-trace-ntfs)](https://pypi.org/project/phantom-trace-ntfs/)
 ![tests](https://github.com/JackSessions/PhantomTrace/actions/workflows/test.yml/badge.svg)
+![python](https://img.shields.io/pypi/pyversions/phantom-trace-ntfs)
+![licence](https://img.shields.io/badge/licence-MIT-blue)
+
+```bash
+pipx install phantom-trace-ntfs
+phantom-trace --gui            # or: phantom-trace disk.img
+```
 
 NTFS describes the same disk in several places. Honest activity keeps those descriptions in agreement; tampering (and corruption) often doesn't. PhantomTrace reads a raw NTFS image or device, **read-only**, and reports where the layers disagree.
 
@@ -9,7 +17,7 @@ NTFS describes the same disk in several places. Honest activity keeps those desc
  | _ \ |_  __ _ _ _  __| |_ ___ _ __   |_   _| _ __ _ __ ___
  |  _/ ' \/ _` | ' \/ _|  _/ _ \ '  \    | || '_/ _` / _/ -_)
  |_| |_||_\__,_|_||_\__|\__\___/_|_|_|   |_||_| \__,_\__\___|
-  v0.3.0  |  read-only NTFS cross-layer consistency checker
+  v0.6.0  |  read-only NTFS cross-layer consistency checker
 
   Target  tests/demo/tampered.img
   Volume  4096 B clusters | 1024 B MFT records | 88 records | 16383 clusters
@@ -38,16 +46,28 @@ Also writes a shareable report (`--html report.html`):
 
 ![HTML report](https://raw.githubusercontent.com/JackSessions/PhantomTrace/main/docs/report.png)
 
+## Why would anyone use this?
+
+Most NTFS tools show you what the file system *says*. PhantomTrace checks whether the file system **agrees with itself**. Honest activity keeps the MFT, the cluster bitmap and the run lists consistent; tampering (and corruption) often doesn't.
+
+- **Incident responders and forensic examiners** get a quick, read-only second opinion on a disk image: hidden or resurrected MFT entries, a bitmap edited to hide data, clusters claimed by two files, forged run lists, torn records.
+- **Students and researchers of anti-forensics** get a small, readable reference implementation (one Python file, no dependencies) of cross-layer checks, with a test suite that builds real NTFS volumes and tampers with them on purpose.
+- **Anyone triaging a suspect disk** can run it safely: it never writes to the image or device, and it explains every finding in plain English.
+
+What it is **not**: a replacement for The Sleuth Kit, MFTECmd or an examiner. It reports *inconsistencies*, which can come from tampering, corruption or a live system that was still writing. Every finding is a lead to verify with a second tool, not proof.
+
 ## Install
 
 ```
-pipx install phantom-trace-ntfs                                 # once published on PyPI; gives you the `phantom-trace` command
+pipx install phantom-trace-ntfs                                 # from PyPI; gives you the `phantom-trace` and `phantom-trace-gui` commands
 pipx install git+https://github.com/JackSessions/PhantomTrace   # latest from GitHub
 # or just run the single file:
 python3 phantom_trace.py image.img
 ```
 
 ## Point-and-click GUI
+
+![PhantomTrace GUI](https://raw.githubusercontent.com/JackSessions/PhantomTrace/main/docs/gui.png)
 
 ```
 phantom-trace --gui          # or: phantom-trace-gui   (and optionally an image path to scan straight away)
