@@ -46,6 +46,19 @@ pipx install git+https://github.com/JackSessions/PhantomTrace   # gives you the 
 python3 phantom_trace.py image.img
 ```
 
+## Windows
+
+Python 3.9+ is all you need (no extra packages). In an **Administrator** terminal:
+
+```
+python phantom_trace.py disk.img                  # a raw image: best option
+python phantom_trace.py \\.\C:                     # a live volume (read-only, but it changes while you read it)
+```
+
+Prefer an image or a volume snapshot: a live system keeps writing, which can produce harmless mismatches. Tools like FTK Imager can make a raw (`.dd`/`.img`) copy, and VHD/VHDX "fixed" disks are readable directly. Whole-disk images (MBR or GPT) are handled automatically; the NTFS partition is found for you (`--partition N` picks another).
+
+The `windows` workflow in `.github/workflows` formats a real NTFS volume with Windows, uses it (creates, deletes, copies, alternate data stream), and checks that PhantomTrace reports it clean. Run it from the Actions tab.
+
 ## Quick test on Linux
 
 ```
@@ -102,11 +115,18 @@ The test suite builds **real NTFS volumes** with `mkntfs`/`ntfscp`, then makes c
 
 Run them with `python3 -m unittest discover -s tests -v` (needs `ntfs-3g` for the image tools).
 
+## Beyond the integrity checks
+
+`--heuristics` adds weaker, higher-false-positive timestamp checks: `$STANDARD_INFORMATION` vs `$FILE_NAME` times (a classic timestomp sign) and zero sub-second timestamps. They are off by default and always reported as low severity.
+
+The HTML report includes a **volume map**: every square is a slice of the disk, brightness shows how full it is, and red outlines contain clusters named in findings.
+
 ## Known limitations
 
 - The test images were made with the ntfs-3g tools and tampered with by this project's own helper. They have not yet been checked against volumes formatted and used by Windows, or against known real-world anti-forensic tooling. Treat a finding as a lead to verify with another tool (for example The Sleuth Kit), not as proof.
 - A heavily fragmented `$MFT` that uses an `$ATTRIBUTE_LIST` is only read from its first extent (the tool warns when it sees this).
 - Compressed and sparse files: sparse runs are skipped; compressed streams are not checked in depth.
+- The Windows workflow has been written but not run yet; until it passes, treat Windows results as unverified.
 - Only the unnamed and named non-resident attributes in in-use records are checked; `$LogFile` and `$UsnJrnl` analysis are not implemented.
 
 ## Roadmap

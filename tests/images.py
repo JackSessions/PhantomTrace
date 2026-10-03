@@ -138,3 +138,29 @@ def build_churned(path: str, size_mb: int = 128):
     finally:
         subprocess.run(["fusermount", "-u", mnt], check=True)
         os.rmdir(mnt)
+
+
+def tamper_timestomp(path, name="file6.bin"):
+    """Backdate all four $STANDARD_INFORMATION times to a whole-second value, the way simple timestomp tools do."""
+    from datetime import datetime
+    fh, fs = open_fs(path)
+    rec = find(fs, name); raw = fs.raw_record(rec.number); fh.close()
+    off = pt.u16(raw, 0x14)
+    while pt.u32(raw, off) != 0x10:
+        off += pt.u32(raw, off + 4)
+    content = off + pt.u16(raw, off + 0x14)
+    ft = int((datetime(2005, 1, 1) - datetime(1601, 1, 1)).total_seconds()) * 10_000_000
+    patch(path, fs.record_offset(rec.number) + content, ft.to_bytes(8, "little") * 4)
+
+
+def build_disk(path, layout="msdos", tamper=None):
+    """A whole-disk image: partition table + one NTFS partition at 1 MiB (needs sfdisk)."""
+    with tempfile.TemporaryDirectory() as d:
+        part = os.path.join(d, "part.img")
+        build_clean(part)
+        if tamper:
+            tamper(part)
+        subprocess.run(["truncate", "-s", "100M", path], check=True)
+        spec = "label: dos\nstart=2048, type=7\n" if layout == "msdos" else "label: gpt\nstart=2048, type=EBD0A0A2-B9E5-4433-87C0-68B6B72699C7\n"
+        subprocess.run(["sfdisk", path], input=spec.encode(), check=True, capture_output=True)
+        subprocess.run(["dd", f"if={part}", f"of={path}", "bs=1M", "seek=1", "conv=notrunc"], check=True, capture_output=True)

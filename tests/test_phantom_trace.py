@@ -46,6 +46,17 @@ class DetectionTests(unittest.TestCase):
         images.tamper_flag_flip(path)
         self.assertEqual({c for c in checks(path) if pt.SEVERITY[c] == "high"}, {"mft_flag_vs_bitmap"})
 
+    def test_timestamp_heuristics_are_opt_in(self):
+        path = os.path.join(self.tmp, "stomp.img")
+        shutil.copy(self.clean, path)
+        images.tamper_timestomp(path)
+        self.assertEqual(checks(path), set(), "heuristics must not run by default")
+        with open(path, "rb") as fh:
+            found = {f.check for f in pt.analyse(pt.Ntfs(fh), heuristics=True)}
+        self.assertEqual(found, {"timestomp_si_before_fn", "timestomp_zero_fraction"})
+        with open(self.clean, "rb") as fh:
+            self.assertEqual(pt.analyse(pt.Ntfs(fh), heuristics=True), [], "heuristics false positive on a clean volume")
+
     def test_json_csv_and_html_outputs(self):
         path = os.path.join(self.tmp, "outputs.img")
         shutil.copy(self.clean, path)
@@ -57,9 +68,11 @@ class DetectionTests(unittest.TestCase):
         self.assertEqual(code, 1)
         data = json.loads(buf.getvalue())
         self.assertTrue(any(f["check"] == "clusters_free_in_bitmap" for f in data["findings"]))
-        rows = list(csv.DictReader(open(out_csv)))
+        with open(out_csv) as cf:
+            rows = list(csv.DictReader(cf))
         self.assertEqual(rows[0]["severity"], "high")
-        page = open(out_html, encoding="utf-8").read()
+        with open(out_html, encoding="utf-8") as hf:
+            page = hf.read()
         self.assertIn("clusters_free_in_bitmap", page)
         self.assertIn("file1.bin", page)
 
@@ -90,6 +103,24 @@ class ChurnedVolumeTests(unittest.TestCase):
             path = os.path.join(d, "churn.img")
             images.build_churned(path)
             self.assertEqual(checks(path), set(), "false positives on a realistically used volume")
+
+
+@unittest.skipUnless(images.have_tools() and shutil.which("sfdisk"), "needs ntfs-3g and sfdisk")
+class PartitionTests(unittest.TestCase):
+    def test_finds_ntfs_in_mbr_and_gpt_disk_images(self):
+        for layout in ("msdos", "gpt"):
+            with self.subTest(layout), tempfile.TemporaryDirectory() as d:
+                disk = os.path.join(d, "disk.img")
+                images.build_disk(disk, layout)
+                with open(disk, "rb") as fh:
+                    self.assertEqual([o for o, _ in pt.locate_volumes(fh)], [1048576])
+                self.assertEqual(pt.main([disk, "-q", "--no-color"]), 0)
+
+    def test_tamper_inside_a_partition_is_found(self):
+        with tempfile.TemporaryDirectory() as d:
+            disk = os.path.join(d, "disk.img")
+            images.build_disk(disk, "gpt", tamper=images.tamper_bitmap_free)
+            self.assertEqual(pt.main([disk, "-q", "--no-color"]), 1)
 
 
 class RunListTests(unittest.TestCase):

@@ -22,9 +22,10 @@ import os
 import struct
 import sys
 import time
+from datetime import datetime, timedelta
 from dataclasses import dataclass, field
 
-__version__ = "0.3.0"
+__version__ = "0.4.0"
 FIXUP_STRIDE = 512
 MFT_REC_MFT, MFT_REC_MIRR, MFT_REC_BITMAP = 0, 1, 6
 ATTR_ATTRLIST, ATTR_FILENAME, ATTR_DATA, ATTR_BITMAP, ATTR_END = 0x20, 0x30, 0x80, 0xB0, 0xFFFFFFFF
@@ -39,12 +40,72 @@ WHY = {
     "mirror_mismatch": "The first MFT records differ from their copy in $MFTMirr. NTFS keeps them in sync, so a mismatch is worth a look (low confidence: a crash can cause it too).",
     "parse_warning": "The tool could not fully read part of the structure. Results for that area are incomplete.",
 }
-SEVERITY = {"mft_flag_vs_bitmap": "high", "clusters_free_in_bitmap": "high", "cross_allocated": "high", "run_out_of_bounds": "high",
+WHY["timestomp_si_before_fn"] = ("Heuristic. The $STANDARD_INFORMATION created time (easy for tools to change) is earlier than the $FILE_NAME created time (harder to change). "
+                                 "This is a well-known timestomping sign, but file extraction and some copy tools can cause it too.")
+WHY["timestomp_zero_fraction"] = ("Heuristic. All four $STANDARD_INFORMATION times have a zero sub-second part while $FILE_NAME does not. Some timestomp tools cannot set sub-second values. "
+                                  "Archive extraction and some copy tools can also do this.")
+SEVERITY = {"timestomp_si_before_fn": "low", "timestomp_zero_fraction": "low", "mft_flag_vs_bitmap": "high", "clusters_free_in_bitmap": "high", "cross_allocated": "high", "run_out_of_bounds": "high",
             "bad_fixup": "medium", "mirror_mismatch": "low", "parse_warning": "low"}
 
 
 class NtfsError(Exception):
     pass
+
+
+ALIGN = 4096    # raw devices (especially on Windows) only accept sector-aligned reads; 4096 is safe for 512e and 4Kn disks
+
+
+def raw_read(fh, pos: int, n: int) -> bytes:
+    start = pos & ~(ALIGN - 1)
+    end = (pos + n + ALIGN - 1) & ~(ALIGN - 1)
+    fh.seek(start)
+    data = fh.read(end - start)
+    out = data[pos - start:pos - start + n]
+    if len(out) != n:
+        raise NtfsError(f"unexpected end of image at byte {pos}")
+    return out
+
+
+GPT_BASIC_DATA = bytes.fromhex("A2A0D0EBE5B9334487C068B6B72699C7")
+
+
+def _is_ntfs_at(fh, off: int) -> bool:
+    try:
+        bs = raw_read(fh, off, 512)
+    except (NtfsError, OSError):
+        return False
+    return bs[3:11] == b"NTFS    " and bs[510:512] == b"\x55\xaa"
+
+
+def locate_volumes(fh) -> list[tuple[int, str]]:
+    """Find NTFS volumes in a raw volume, MBR disk image or GPT disk image. Returns [(byte offset, description)]."""
+    if _is_ntfs_at(fh, 0):
+        return [(0, "volume at start of image")]
+    found: list[tuple[int, str]] = []
+    try:
+        mbr = raw_read(fh, 0, 512)
+    except (NtfsError, OSError):
+        return found
+    if mbr[510:512] != b"\x55\xaa":
+        return found
+    parts = [mbr[446 + 16 * i:462 + 16 * i] for i in range(4)]
+    if any(p[4] == 0xEE for p in parts):                              # GPT
+        try:
+            hdr = raw_read(fh, 512, 92)
+            if hdr[:8] == b"EFI PART":
+                lba, count, size = u64(hdr, 0x48), u32(hdr, 0x50), u32(hdr, 0x54)
+                table = raw_read(fh, lba * 512, min(count, 128) * size)
+                for i in range(min(count, 128)):
+                    e = table[i * size:(i + 1) * size]
+                    if e[:16] == GPT_BASIC_DATA and _is_ntfs_at(fh, u64(e, 0x20) * 512):
+                        found.append((u64(e, 0x20) * 512, f"GPT partition {i + 1}"))
+        except (NtfsError, OSError):
+            pass
+    else:                                                              # MBR
+        for i, p in enumerate(parts):
+            if p[4] in (0x07, 0x17, 0x27) and u32(p, 8) and _is_ntfs_at(fh, u32(p, 8) * 512):
+                found.append((u32(p, 8) * 512, f"MBR partition {i + 1}"))
+    return found
 
 
 def u16(b, o): return struct.unpack_from("<H", b, o)[0]
@@ -169,11 +230,7 @@ class Ntfs:
         self._load_mft()
 
     def read(self, pos: int, n: int) -> bytes:
-        self.fh.seek(self.offset + pos)
-        data = self.fh.read(n)
-        if len(data) != n:
-            raise NtfsError(f"unexpected end of image at byte {pos}")
-        return data
+        return raw_read(self.fh, self.offset + pos, n)
 
     def read_runs(self, runs, size: int) -> bytes:
         out = bytearray()
@@ -253,7 +310,7 @@ class Finding:
                 "why": WHY[self.check], "detail": self.detail}
 
 
-def analyse(fs: Ntfs, progress=None) -> list[Finding]:
+def analyse(fs: Ntfs, progress=None, heuristics: bool = False) -> list[Finding]:
     out: list[Finding] = []
     for w in fs.warnings:
         out.append(Finding("parse_warning", w))
@@ -278,6 +335,15 @@ def analyse(fs: Ntfs, progress=None) -> list[Finding]:
                                {"header_in_use": flag_used, "bitmap_allocated": bm_used}))
         if not flag_used:
             continue
+        if heuristics and rec.base == 0 and i >= 24:
+            ts = timestamps(rec)
+            if ts and all(ts[0]) and all(ts[1]):
+                si, fn = ts
+                if si[0] < fn[0] - 20_000_000:
+                    out.append(Finding("timestomp_si_before_fn", f"Record {i}: $SI created {filetime(si[0])} is before $FN created {filetime(fn[0])}", i, nm,
+                                       {"si_created": filetime(si[0]), "fn_created": filetime(fn[0])}))
+                if all(t % 10_000_000 == 0 for t in si) and fn[0] % 10_000_000 != 0:
+                    out.append(Finding("timestomp_zero_fraction", f"Record {i}: all $SI times end in .0000000 but $FN times do not", i, nm, {"si": [filetime(t) for t in si]}))
         for a in rec.attrs:
             if not a.nonresident:
                 continue
@@ -291,14 +357,14 @@ def analyse(fs: Ntfs, progress=None) -> list[Finding]:
                 free += sum(1 for c in range(lcn, lcn + length) if not bit(vbm, c))
                 intervals.append((lcn, lcn + length, i))
             if free:
-                out.append(Finding("clusters_free_in_bitmap", f"Record {i} owns {free} cluster(s) that the volume bitmap marks free", i, nm, {"free_clusters": free, "attribute": hex(a.type)}))
+                out.append(Finding("clusters_free_in_bitmap", f"Record {i} owns {free} cluster(s) that the volume bitmap marks free", i, nm, {"free_clusters": free, "attribute": hex(a.type), "runs": [(l, n) for l, n in a.runs if l is not None]}))
     intervals.sort()
     top_end, top_rec = -1, -1
     seen = set()
     for s, e, r in intervals:
         if s < top_end and r != top_rec and (min(r, top_rec), max(r, top_rec)) not in seen:
             seen.add((min(r, top_rec), max(r, top_rec)))
-            out.append(Finding("cross_allocated", f"Records {top_rec} and {r} both claim cluster {s}", r, "", {"records": [top_rec, r], "cluster": s}))
+            out.append(Finding("cross_allocated", f"Records {top_rec} and {r} both claim cluster {s}", r, "", {"records": [top_rec, r], "cluster": s, "runs": [(s, min(e, top_end) - s)]}))
         if e > top_end:
             top_end, top_rec = e, r
     # E: mirror
@@ -311,6 +377,23 @@ def analyse(fs: Ntfs, progress=None) -> list[Finding]:
     except NtfsError:
         pass
     return out
+
+
+def filetime(t: int) -> str:
+    try:
+        return (datetime(1601, 1, 1) + timedelta(microseconds=t // 10)).strftime("%Y-%m-%d %H:%M:%S")
+    except OverflowError:
+        return "invalid"
+
+
+def timestamps(rec: Record):
+    """(SI times, FN times) as lists of four FILETIMEs, or None when an attribute is missing."""
+    si = next((a for a in rec.attrs if a.type == 0x10 and not a.nonresident and len(a.content) >= 32), None)
+    fns = [a for a in rec.attrs if a.type == ATTR_FILENAME and not a.nonresident and len(a.content) >= 0x42]
+    if not si or not fns:
+        return None
+    fn = next((a for a in fns if a.content[0x41] != 2), fns[0])             # prefer Win32/POSIX over the DOS 8.3 name
+    return [u64(si.content, o) for o in (0, 8, 16, 24)], [u64(fn.content, o) for o in (8, 16, 24, 32)]
 
 
 class Style:
@@ -383,6 +466,22 @@ def report_csv(findings: list[Finding], path: str) -> None:
             w.writerow([x.severity, x.check, x.record if x.record is not None else "", x.name, x.message, WHY[x.check]])
 
 
+def cluster_map(fs: Ntfs, findings: list[Finding], cols: int = 128, rows: int = 40):
+    """Allocation fraction per cell (0-100) and a parallel flag per cell for clusters named in findings."""
+    vbm = fs.volume_bitmap(); total = fs.total_clusters; cells = cols * rows
+    per = max(1, -(-total // cells)); n = -(-total // per)
+    frac, flag = [], [0] * n
+    for c in range(n):
+        a, b = c * per, min(total, (c + 1) * per)
+        bits = sum(1 for k in range(a, b) if bit(vbm, k)) if b - a <= 64 else sum(bin(x).count("1") for x in vbm[a >> 3:b >> 3])
+        frac.append(round(100 * bits / max(1, b - a)))
+    for f in findings:
+        for lcn, ln in f.detail.get("runs", []):
+            for c in range(lcn // per, min(n - 1, (lcn + max(ln, 1) - 1) // per) + 1):
+                flag[c] = 1
+    return {"cols": cols, "per": per, "cells": n, "frac": frac, "flag": flag}
+
+
 def report_html(fs: Ntfs, findings: list[Finding], target: str) -> str:
     e = html.escape
     color, msg = verdict(findings)
@@ -392,25 +491,33 @@ def report_html(fs: Ntfs, findings: list[Finding], target: str) -> str:
         f'<td>{"" if f.record is None else f.record}</td><td>{e(f.name)}</td><td>{e(f.message)}<div class="why">{e(WHY[f.check])}</div></td></tr>'
         for f in sorted(findings, key=lambda x: ("high", "medium", "low").index(x.severity)))
     counts = "".join(f'<div class="stat" style="--c:{chip[s]}"><b>{sum(f.severity == s for f in findings)}</b><span>{s}</span></div>' for s in ("high", "medium", "low"))
+    cm = cluster_map(fs, findings)
     verdict_col = {"red": "#ff4d5e", "yellow": "#ffb02e", "cyan": "#38d6ff", "green": "#4af0a2"}[color]
     return f"""<!doctype html><html lang="en"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <title>PhantomTrace report</title><style>
 :root{{color-scheme:dark}}body{{margin:0;background:#07090c;color:#d7e3ea;font:15px/1.5 system-ui,sans-serif}}main{{max-width:64rem;margin:0 auto;padding:2rem 1rem 4rem}}
-h1{{font:700 1.6rem ui-monospace,monospace;letter-spacing:.04em;margin:0;color:#e04aff}}small,.why{{color:#7fa7b5}}.why{{font-size:.82rem;margin-top:.3rem}}
+h2{{font:600 1rem ui-monospace,monospace;color:#7fa7b5;margin:1.6rem 0 .4rem}}canvas{{display:block;max-width:100%;image-rendering:pixelated;border:1px solid #1c252d;border-radius:6px;background:#05070a}}h1{{font:700 1.6rem ui-monospace,monospace;letter-spacing:.04em;margin:0;color:#e04aff}}small,.why{{color:#7fa7b5}}.why{{font-size:.82rem;margin-top:.3rem}}
 .meta{{margin:.4rem 0 1.4rem;font:13px ui-monospace,monospace;color:#7fa7b5}}.verdict{{border-left:4px solid {verdict_col};padding:.7rem 1rem;background:#0c1116;margin:1rem 0}}
 .stats{{display:flex;gap:.8rem;margin:1rem 0}}.stat{{flex:1;border:1px solid var(--c);border-radius:6px;padding:.6rem;text-align:center}}.stat b{{display:block;font-size:1.6rem;color:var(--c)}}
 table{{width:100%;border-collapse:collapse;margin-top:1rem}}td,th{{text-align:left;padding:.55rem .5rem;border-bottom:1px solid #1c252d;vertical-align:top}}th{{font:12px ui-monospace,monospace;color:#7fa7b5;text-transform:uppercase}}
 .chip{{display:inline-block;border:1px solid var(--c);color:var(--c);border-radius:999px;padding:0 .6rem;font:12px ui-monospace,monospace;text-transform:uppercase}}code{{color:#ffb02e}}
 </style><main><h1>PhantomTrace</h1><div class="meta">v{__version__} | {e(target)} | {fs.cluster} B clusters, {fs.rec_size} B records, {fs.n_records} MFT records, {fs.total_clusters} clusters</div>
 <div class="verdict"><b>Verdict.</b> {e(msg)}</div><div class="stats">{counts}</div>
+<h2>Volume map</h2><canvas id="map" height="10"></canvas>
+<p><small>Each square is a slice of the volume (<span id="per"></span> clusters). Brightness is how full that slice is according to the volume bitmap. Red outlines contain clusters named in findings.</small></p>
 <table><tr><th>Severity</th><th>Check</th><th>Record</th><th>Name</th><th>Finding</th></tr>{rows or '<tr><td colspan="5">No findings.</td></tr>'}</table>
+<script>const M={json.dumps(cm)};const cv=document.getElementById('map'),cols=M.cols,sz=Math.floor(Math.min(1000,document.querySelector('main').clientWidth)/cols),rows=Math.ceil(M.cells/cols);
+cv.width=sz*cols;cv.height=sz*rows;const g=cv.getContext('2d');document.getElementById('per').textContent=M.per;
+for(let i=0;i<M.cells;i++){{const x=(i%cols)*sz,y=Math.floor(i/cols)*sz,f=M.frac[i]/100;g.fillStyle=`rgba(56,214,255,${{(0.07+0.85*f).toFixed(2)}})`;g.fillRect(x,y,sz-1,sz-1);if(M.flag[i]){{g.strokeStyle='#ff4d5e';g.lineWidth=2;g.strokeRect(x+1,y+1,sz-3,sz-3);}}}}</script>
 <p><small>Findings are leads, not proof. Confirm with a second tool (for example The Sleuth Kit) before drawing conclusions.</small></p></main></html>"""
 
 
 def main(argv=None) -> int:
     ap = argparse.ArgumentParser(prog="phantom-trace", description="Cross-layer consistency checks for NTFS (read-only).")
     ap.add_argument("target", help="raw NTFS image, or a device such as /dev/sdb1 or \\\\.\\C: (needs admin/root)")
-    ap.add_argument("--offset", type=lambda x: int(x, 0), default=0, help="byte offset of the NTFS partition inside the image")
+    ap.add_argument("--offset", type=lambda x: int(x, 0), default=None, help="byte offset of the NTFS partition (default: detected automatically)")
+    ap.add_argument("--partition", type=int, default=1, help="which NTFS partition to use when an image holds several (default 1)")
+    ap.add_argument("--heuristics", action="store_true", help="also run weaker timestamp checks ($SI vs $FN); more false positives")
     ap.add_argument("--json", action="store_true", help="machine-readable output on stdout")
     ap.add_argument("--csv", metavar="FILE", help="also write findings to a CSV file")
     ap.add_argument("--html", metavar="FILE", help="also write a self-contained HTML report")
@@ -419,16 +526,30 @@ def main(argv=None) -> int:
     ap.add_argument("-q", "--quiet", action="store_true", help="print only the summary and verdict")
     ap.add_argument("--version", action="version", version=__version__)
     args = ap.parse_args(argv)
+    if os.name == "nt":
+        os.system("")          # enables ANSI colour in the Windows console
     st = Style(sys.stdout.isatty() and not args.no_color and "NO_COLOR" not in os.environ)
     try:
         with open(args.target, "rb") as fh:
             t0 = time.time()
-            fs = Ntfs(fh, args.offset)
+            offset = args.offset
+            if offset is None:
+                vols = locate_volumes(fh)
+                if not vols:
+                    raise NtfsError("no NTFS volume found (not NTFS, or an unsupported partition layout). Use --offset if you know where it starts.")
+                if len(vols) > 1:
+                    print("Several NTFS volumes found: " + "; ".join(f"{i + 1}) {d} at byte {o}" for i, (o, d) in enumerate(vols)) + f". Using {args.partition}; change with --partition.", file=sys.stderr)
+                if not 1 <= args.partition <= len(vols):
+                    raise NtfsError(f"--partition must be between 1 and {len(vols)}")
+                offset = vols[args.partition - 1][0]
+                if offset:
+                    print(f"Using NTFS volume at byte offset {offset}", file=sys.stderr)
+            fs = Ntfs(fh, offset)
             tty = sys.stderr.isatty() and not args.json
             def progress(i, n):
                 if tty:
                     sys.stderr.write(f"\r  scanning MFT {i * 100 // max(n, 1)}% ")
-            findings = analyse(fs, progress)
+            findings = analyse(fs, progress, args.heuristics)
             if tty:
                 sys.stderr.write("\r" + " " * 30 + "\r")
             if args.csv:

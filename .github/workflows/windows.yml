@@ -1,0 +1,27 @@
+name: windows
+# Validates PhantomTrace against a volume that Windows itself formatted and used.
+# A clean Windows-made volume must come back clean; if this goes red, the tool has a false positive to fix.
+on: [workflow_dispatch, push]
+jobs:
+  validate:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Unit tests (image tests are skipped without ntfs-3g)
+        run: python -m unittest discover -s tests -v
+      - name: Format and use a real NTFS volume with Windows
+        shell: pwsh
+        run: ./tests/windows_make_volume.ps1 -Vhd "$env:RUNNER_TEMP\win.vhd"
+      - name: Run PhantomTrace on it
+        shell: pwsh
+        run: |
+          python phantom_trace.py "$env:RUNNER_TEMP\win.vhd" --heuristics --html windows-report.html
+          exit $LASTEXITCODE
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: windows-report
+          path: windows-report.html
