@@ -25,7 +25,10 @@ import time
 from datetime import datetime, timedelta
 from dataclasses import dataclass, field
 
-__version__ = "0.4.0"
+__version__ = "0.5.0"
+__author__ = "Jack Sessions"
+__license__ = "MIT"
+__url__ = "https://github.com/JackSessions/PhantomTrace"
 FIXUP_STRIDE = 512
 MFT_REC_MFT, MFT_REC_MIRR, MFT_REC_BITMAP = 0, 1, 6
 ATTR_ATTRLIST, ATTR_FILENAME, ATTR_DATA, ATTR_BITMAP, ATTR_END = 0x20, 0x30, 0x80, 0xB0, 0xFFFFFFFF
@@ -379,6 +382,57 @@ def analyse(fs: Ntfs, progress=None, heuristics: bool = False) -> list[Finding]:
     return out
 
 
+@dataclass
+class ScanResult:
+    target: str
+    offset: int
+    info: dict
+    findings: list
+    cmap: dict
+    elapsed: float
+    volumes: list
+
+
+def volume_info(fs: Ntfs) -> dict:
+    return {"cluster_size": fs.cluster, "record_size": fs.rec_size, "records": fs.n_records, "clusters": fs.total_clusters}
+
+
+def scan(target: str, offset: int | None = None, partition: int = 1, heuristics: bool = False, progress=None, notify=None, with_map: bool = True) -> ScanResult:
+    """Open an image or device read-only, find the NTFS volume, run every check. Used by the CLI and the GUI."""
+    t0 = time.time()
+    with open(target, "rb") as fh:
+        vols: list = []
+        if offset is None:
+            vols = locate_volumes(fh)
+            if not vols:
+                raise NtfsError("no NTFS volume found (not NTFS, or an unsupported partition layout). Use --offset if you know where it starts.")
+            if len(vols) > 1 and notify:
+                notify("Several NTFS volumes found: " + "; ".join(f"{i + 1}) {d} at byte {o}" for i, (o, d) in enumerate(vols)) + f". Using {partition}; change with --partition.")
+            if not 1 <= partition <= len(vols):
+                raise NtfsError(f"--partition must be between 1 and {len(vols)}")
+            offset = vols[partition - 1][0]
+            if offset and notify:
+                notify(f"Using NTFS volume at byte offset {offset}")
+        fs = Ntfs(fh, offset)
+        findings = analyse(fs, progress, heuristics)
+        cmap = cluster_map(fs, findings) if with_map else {}
+        return ScanResult(target, offset, volume_info(fs), findings, cmap, time.time() - t0, vols)
+
+
+def csv_text(findings: list) -> str:
+    import io
+    buf = io.StringIO()
+    w = csv.writer(buf, lineterminator="\n")
+    w.writerow(["severity", "check", "record", "name", "message", "why"])
+    for x in findings:
+        w.writerow([x.severity, x.check, x.record if x.record is not None else "", x.name, x.message, WHY[x.check]])
+    return buf.getvalue()
+
+
+def json_text(res: "ScanResult") -> str:
+    return json.dumps({"version": __version__, "target": res.target, "volume": res.info, "findings": [f.as_dict() for f in res.findings]}, indent=2)
+
+
 def filetime(t: int) -> str:
     try:
         return (datetime(1601, 1, 1) + timedelta(microseconds=t // 10)).strftime("%Y-%m-%d %H:%M:%S")
@@ -396,12 +450,50 @@ def timestamps(rec: Record):
     return [u64(si.content, o) for o in (0, 8, 16, 24)], [u64(fn.content, o) for o in (8, 16, 24, 32)]
 
 
+def hsv_rgb(h: float) -> tuple[int, int, int]:
+    i = int(h * 6) % 6; f = h * 6 - int(h * 6)
+    p, q, t = 0.0, 1 - f, f
+    r, g, b = [(1, t, p), (q, 1, p), (p, 1, t), (p, q, 1), (t, p, 1), (1, p, q)][i]
+    return int(r * 255), int(g * 255), int(b * 255)
+
+
+class _Help(argparse.Action):
+    """-h / --help: shows the rainbow banner first when talking to a terminal."""
+    def __init__(self, option_strings, dest=argparse.SUPPRESS, default=argparse.SUPPRESS, help=None):
+        super().__init__(option_strings, dest=dest, default=default, nargs=0, help=help)
+
+    def __call__(self, parser, namespace, values, option_string=None):
+        if sys.stdout.isatty():
+            if os.name == "nt":
+                os.system("")
+            st = Style("NO_COLOR" not in os.environ)
+            print(st.rainbow(BANNER.strip("\n")) + "\n" + st("dim", f"  v{__version__}") + "\n")
+        parser.print_help()
+        parser.exit()
+
+
 class Style:
     """ANSI colour that switches itself off for pipes, NO_COLOR and --no-color."""
     CODES = {"red": "31;1", "yellow": "33;1", "cyan": "36", "green": "32;1", "dim": "2", "bold": "1", "mag": "35;1"}
 
     def __init__(self, on: bool): self.on = on
     def __call__(self, name: str, text: str) -> str: return f"\x1b[{self.CODES[name]}m{text}\x1b[0m" if self.on else text
+
+    def rainbow(self, text: str) -> str:
+        """A diagonal rainbow across multi-line text (24-bit colour; plain text when colour is off)."""
+        if not self.on:
+            return text
+        out = []
+        for row, line in enumerate(text.split("\n")):
+            chars = []
+            for col, ch in enumerate(line):
+                if ch == " ":
+                    chars.append(ch)
+                    continue
+                r, g, b = hsv_rgb(((col * 5 + row * 18) % 360) / 360)
+                chars.append(f"\x1b[1;38;2;{r};{g};{b}m{ch}")
+            out.append("".join(chars) + "\x1b[0m")
+        return "\n".join(out)
 
 
 SEV_COLOR = {"high": "red", "medium": "yellow", "low": "cyan"}
@@ -424,14 +516,14 @@ def verdict(findings: list[Finding]) -> tuple[str, str]:
     return "green", "No cross-layer inconsistencies found."
 
 
-def report_text(fs: Ntfs, findings: list[Finding], limit: int, st: Style, target: str = "", elapsed: float = 0.0, quiet: bool = False) -> str:
+def report_text(info: dict, findings: list[Finding], limit: int, st: Style, target: str = "", elapsed: float = 0.0, quiet: bool = False) -> str:
     L: list[str] = []
     if not quiet:
-        L.append(st("mag", BANNER.rstrip("\n")))
+        L.append(st.rainbow(BANNER.rstrip("\n")))
         L.append(st("dim", f"  v{__version__}  |  read-only NTFS cross-layer consistency checker"))
         L.append("")
         L.append(f"  {st('bold', 'Target ')} {target}")
-        L.append(f"  {st('bold', 'Volume ')} {fs.cluster} B clusters | {fs.rec_size} B MFT records | {fs.n_records} records | {fs.total_clusters} clusters")
+        L.append(f"  {st('bold', 'Volume ')} {info['cluster_size']} B clusters | {info['record_size']} B MFT records | {info['records']} records | {info['clusters']} clusters")
         L.append("")
     shown = 0
     if not quiet:
@@ -459,11 +551,8 @@ def report_text(fs: Ntfs, findings: list[Finding], limit: int, st: Style, target
 
 
 def report_csv(findings: list[Finding], path: str) -> None:
-    with open(path, "w", newline="") as f:
-        w = csv.writer(f)
-        w.writerow(["severity", "check", "record", "name", "message", "why"])
-        for x in findings:
-            w.writerow([x.severity, x.check, x.record if x.record is not None else "", x.name, x.message, WHY[x.check]])
+    with open(path, "w", newline="", encoding="utf-8") as f:
+        f.write(csv_text(findings))
 
 
 def cluster_map(fs: Ntfs, findings: list[Finding], cols: int = 128, rows: int = 40):
@@ -482,7 +571,7 @@ def cluster_map(fs: Ntfs, findings: list[Finding], cols: int = 128, rows: int = 
     return {"cols": cols, "per": per, "cells": n, "frac": frac, "flag": flag}
 
 
-def report_html(fs: Ntfs, findings: list[Finding], target: str) -> str:
+def report_html(info: dict, findings: list[Finding], target: str, cm: dict) -> str:
     e = html.escape
     color, msg = verdict(findings)
     chip = {"high": "#ff4d5e", "medium": "#ffb02e", "low": "#38d6ff"}
@@ -491,17 +580,16 @@ def report_html(fs: Ntfs, findings: list[Finding], target: str) -> str:
         f'<td>{"" if f.record is None else f.record}</td><td>{e(f.name)}</td><td>{e(f.message)}<div class="why">{e(WHY[f.check])}</div></td></tr>'
         for f in sorted(findings, key=lambda x: ("high", "medium", "low").index(x.severity)))
     counts = "".join(f'<div class="stat" style="--c:{chip[s]}"><b>{sum(f.severity == s for f in findings)}</b><span>{s}</span></div>' for s in ("high", "medium", "low"))
-    cm = cluster_map(fs, findings)
     verdict_col = {"red": "#ff4d5e", "yellow": "#ffb02e", "cyan": "#38d6ff", "green": "#4af0a2"}[color]
     return f"""<!doctype html><html lang="en"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <title>PhantomTrace report</title><style>
 :root{{color-scheme:dark}}body{{margin:0;background:#07090c;color:#d7e3ea;font:15px/1.5 system-ui,sans-serif}}main{{max-width:64rem;margin:0 auto;padding:2rem 1rem 4rem}}
-h2{{font:600 1rem ui-monospace,monospace;color:#7fa7b5;margin:1.6rem 0 .4rem}}canvas{{display:block;max-width:100%;image-rendering:pixelated;border:1px solid #1c252d;border-radius:6px;background:#05070a}}h1{{font:700 1.6rem ui-monospace,monospace;letter-spacing:.04em;margin:0;color:#e04aff}}small,.why{{color:#7fa7b5}}.why{{font-size:.82rem;margin-top:.3rem}}
+h2{{font:600 1rem ui-monospace,monospace;color:#7fa7b5;margin:1.6rem 0 .4rem}}canvas{{display:block;max-width:100%;image-rendering:pixelated;border:1px solid #1c252d;border-radius:6px;background:#05070a}}h1{{font:700 1.6rem ui-monospace,monospace;letter-spacing:.04em;margin:0;background:linear-gradient(90deg,#ff5f6d,#ffb02e,#ffe14a,#4af0a2,#38d6ff,#8b7bff,#e04aff);-webkit-background-clip:text;background-clip:text;color:transparent;display:inline-block}}small,.why{{color:#7fa7b5}}.why{{font-size:.82rem;margin-top:.3rem}}
 .meta{{margin:.4rem 0 1.4rem;font:13px ui-monospace,monospace;color:#7fa7b5}}.verdict{{border-left:4px solid {verdict_col};padding:.7rem 1rem;background:#0c1116;margin:1rem 0}}
 .stats{{display:flex;gap:.8rem;margin:1rem 0}}.stat{{flex:1;border:1px solid var(--c);border-radius:6px;padding:.6rem;text-align:center}}.stat b{{display:block;font-size:1.6rem;color:var(--c)}}
 table{{width:100%;border-collapse:collapse;margin-top:1rem}}td,th{{text-align:left;padding:.55rem .5rem;border-bottom:1px solid #1c252d;vertical-align:top}}th{{font:12px ui-monospace,monospace;color:#7fa7b5;text-transform:uppercase}}
 .chip{{display:inline-block;border:1px solid var(--c);color:var(--c);border-radius:999px;padding:0 .6rem;font:12px ui-monospace,monospace;text-transform:uppercase}}code{{color:#ffb02e}}
-</style><main><h1>PhantomTrace</h1><div class="meta">v{__version__} | {e(target)} | {fs.cluster} B clusters, {fs.rec_size} B records, {fs.n_records} MFT records, {fs.total_clusters} clusters</div>
+</style><main><h1>PhantomTrace</h1><div class="meta">v{__version__} | {e(target)} | {info['cluster_size']} B clusters, {info['record_size']} B records, {info['records']} MFT records, {info['clusters']} clusters</div>
 <div class="verdict"><b>Verdict.</b> {e(msg)}</div><div class="stats">{counts}</div>
 <h2>Volume map</h2><canvas id="map" height="10"></canvas>
 <p><small>Each square is a slice of the volume (<span id="per"></span> clusters). Brightness is how full that slice is according to the volume bitmap. Red outlines contain clusters named in findings.</small></p>
@@ -509,60 +597,94 @@ table{{width:100%;border-collapse:collapse;margin-top:1rem}}td,th{{text-align:le
 <script>const M={json.dumps(cm)};const cv=document.getElementById('map'),cols=M.cols,sz=Math.floor(Math.min(1000,document.querySelector('main').clientWidth)/cols),rows=Math.ceil(M.cells/cols);
 cv.width=sz*cols;cv.height=sz*rows;const g=cv.getContext('2d');document.getElementById('per').textContent=M.per;
 for(let i=0;i<M.cells;i++){{const x=(i%cols)*sz,y=Math.floor(i/cols)*sz,f=M.frac[i]/100;g.fillStyle=`rgba(56,214,255,${{(0.07+0.85*f).toFixed(2)}})`;g.fillRect(x,y,sz-1,sz-1);if(M.flag[i]){{g.strokeStyle='#ff4d5e';g.lineWidth=2;g.strokeRect(x+1,y+1,sz-3,sz-3);}}}}</script>
-<p><small>Findings are leads, not proof. Confirm with a second tool (for example The Sleuth Kit) before drawing conclusions.</small></p></main></html>"""
+<p><small>Created by <a href="{__url__}" style="color:#38d6ff">Jack Sessions</a> (PhantomTrace v{__version__}, MIT licence). Findings are leads, not proof. Confirm with a second tool (for example The Sleuth Kit) before drawing conclusions.</small></p></main></html>"""
 
 
 def main(argv=None) -> int:
-    ap = argparse.ArgumentParser(prog="phantom-trace", description="Cross-layer consistency checks for NTFS (read-only).")
-    ap.add_argument("target", help="raw NTFS image, or a device such as /dev/sdb1 or \\\\.\\C: (needs admin/root)")
-    ap.add_argument("--offset", type=lambda x: int(x, 0), default=None, help="byte offset of the NTFS partition (default: detected automatically)")
-    ap.add_argument("--partition", type=int, default=1, help="which NTFS partition to use when an image holds several (default 1)")
-    ap.add_argument("--heuristics", action="store_true", help="also run weaker timestamp checks ($SI vs $FN); more false positives")
-    ap.add_argument("--json", action="store_true", help="machine-readable output on stdout")
-    ap.add_argument("--csv", metavar="FILE", help="also write findings to a CSV file")
-    ap.add_argument("--html", metavar="FILE", help="also write a self-contained HTML report")
-    ap.add_argument("--max", type=int, default=50, help="maximum findings to print in text mode")
-    ap.add_argument("--no-color", action="store_true", help="disable colour (also honours NO_COLOR)")
-    ap.add_argument("-q", "--quiet", action="store_true", help="print only the summary and verdict")
-    ap.add_argument("--version", action="version", version=__version__)
-    args = ap.parse_args(argv)
+    ap = argparse.ArgumentParser(
+        prog="phantom-trace", add_help=False, formatter_class=argparse.RawDescriptionHelpFormatter, usage="phantom-trace [options] TARGET",
+        description=(
+            "PhantomTrace: a read-only NTFS cross-layer consistency checker for DFIR.\n\n"
+            "NTFS describes the same disk in several places. Honest activity keeps them in agreement; tampering and\n"
+            "corruption often do not. PhantomTrace compares the layers and reports where they disagree:\n\n"
+            "  mft_flag_vs_bitmap       MFT record 'in use' flag vs the $MFT record bitmap\n"
+            "  clusters_free_in_bitmap  clusters a file owns vs the volume cluster bitmap ($Bitmap)\n"
+            "  cross_allocated          two records claiming the same clusters\n"
+            "  run_out_of_bounds        data runs pointing outside the volume\n"
+            "  bad_fixup                MFT records that fail their update-sequence check\n"
+            "  mirror_mismatch          first MFT records vs $MFTMirr (low confidence)\n"
+            "  --heuristics adds weak timestamp checks ($STANDARD_INFORMATION vs $FILE_NAME)."),
+        epilog=(
+            "examples:\n"
+            "  phantom-trace disk.img                        scan an image (the NTFS partition is found automatically)\n"
+            "  phantom-trace disk.img --html report.html     also write a shareable report with a volume map\n"
+            "  phantom-trace disk.img --json > out.json      machine-readable output for scripts\n"
+            "  phantom-trace disk.img -q                     one-line verdict, handy in scripts (check the exit code)\n"
+            "  phantom-trace disk.img --partition 2          pick the second NTFS volume in the image\n"
+            "  phantom-trace disk.img --offset 1048576       NTFS volume at a known byte offset\n"
+            "  phantom-trace /dev/sdb1                       a device on Linux (needs root; an image is safer)\n"
+            "  phantom-trace \\\\.\\C:                          a volume on Windows (Administrator; an image is safer)\n\n"
+            "  phantom-trace --gui                           open the point-and-click interface in your browser\n\n"
+            "exit codes:  0 clean   1 findings (high or medium)   2 error\n\n"
+            "notes:\n"
+            "  * Read-only: it never writes to the target.\n"
+            "  * Findings are leads, not proof. Confirm with a second tool (for example The Sleuth Kit).\n"
+            "  * A live volume changes while it is read, which can cause harmless mismatches. Prefer a raw image.\n"
+            "  * Encrypted volumes (BitLocker) must be unlocked and imaged first.\n\n"
+            "\n"
+            "Created by Jack Sessions | MIT licence | https://github.com/JackSessions/PhantomTrace"))
+    ap.add_argument("-h", "--help", action=_Help, help="show this help message and exit")
+    ap.add_argument("target", nargs="?", metavar="TARGET", help="raw NTFS image (.img/.dd/.vhd), whole-disk image, or a device (needs admin/root)")
+    g = ap.add_argument_group("locating the volume")
+    g.add_argument("--offset", type=lambda x: int(x, 0), default=None, metavar="BYTES", help="byte offset of the NTFS volume (default: detected automatically)")
+    g.add_argument("--partition", type=int, default=1, metavar="N", help="which NTFS volume to use when an image holds several (default: 1)")
+    g = ap.add_argument_group("output")
+    g.add_argument("--json", action="store_true", help="print machine-readable JSON instead of the report")
+    g.add_argument("--html", metavar="FILE", help="also write a self-contained HTML report (with a volume map)")
+    g.add_argument("--csv", metavar="FILE", help="also write the findings to a CSV file")
+    g.add_argument("--max", type=int, default=50, metavar="N", help="maximum findings to print in the text report (default: 50)")
+    g.add_argument("-q", "--quiet", action="store_true", help="print only the summary and verdict")
+    g.add_argument("--no-color", action="store_true", help="disable colour (NO_COLOR is also honoured)")
+    g = ap.add_argument_group("analysis")
+    g.add_argument("--heuristics", action="store_true", help="also run weaker timestamp checks ($SI vs $FN); more false positives, always low severity")
+    g = ap.add_argument_group("graphical interface")
+    g.add_argument("--gui", action="store_true", help="open the browser-based GUI (runs only on this computer; TARGET is optional)")
+    g.add_argument("--port", type=int, default=0, metavar="N", help="port for --gui (default: a free one)")
+    g.add_argument("--no-browser", action="store_true", help="with --gui: print the address instead of opening a browser")
+    g = ap.add_argument_group("information")
+    g.add_argument("--list-checks", action="store_true", help="list every check with its severity and meaning, then exit")
+    g.add_argument("--version", action="version", version=f"phantom-trace {__version__}")
     if os.name == "nt":
         os.system("")          # enables ANSI colour in the Windows console
+    args = ap.parse_args(argv)
+    if args.list_checks:
+        for name in WHY:
+            print(f"{name:28} [{SEVERITY[name]:6}] {WHY[name]}")
+        return 0
+    if args.gui:
+        from phantom_trace_gui import serve
+        return serve(args.port, not args.no_browser, args.target)
+    if not args.target:
+        ap.error("TARGET is required (a raw NTFS image or device). Try --help for examples.")
     st = Style(sys.stdout.isatty() and not args.no_color and "NO_COLOR" not in os.environ)
     try:
-        with open(args.target, "rb") as fh:
-            t0 = time.time()
-            offset = args.offset
-            if offset is None:
-                vols = locate_volumes(fh)
-                if not vols:
-                    raise NtfsError("no NTFS volume found (not NTFS, or an unsupported partition layout). Use --offset if you know where it starts.")
-                if len(vols) > 1:
-                    print("Several NTFS volumes found: " + "; ".join(f"{i + 1}) {d} at byte {o}" for i, (o, d) in enumerate(vols)) + f". Using {args.partition}; change with --partition.", file=sys.stderr)
-                if not 1 <= args.partition <= len(vols):
-                    raise NtfsError(f"--partition must be between 1 and {len(vols)}")
-                offset = vols[args.partition - 1][0]
-                if offset:
-                    print(f"Using NTFS volume at byte offset {offset}", file=sys.stderr)
-            fs = Ntfs(fh, offset)
-            tty = sys.stderr.isatty() and not args.json
-            def progress(i, n):
-                if tty:
-                    sys.stderr.write(f"\r  scanning MFT {i * 100 // max(n, 1)}% ")
-            findings = analyse(fs, progress, args.heuristics)
+        tty = sys.stderr.isatty() and not args.json
+        def progress(i, n):
             if tty:
-                sys.stderr.write("\r" + " " * 30 + "\r")
-            if args.csv:
-                report_csv(findings, args.csv)
-            if args.html:
-                with open(args.html, "w", encoding="utf-8") as hf:
-                    hf.write(report_html(fs, findings, args.target))
-            if args.json:
-                print(json.dumps({"version": __version__, "target": args.target, "volume": {"cluster_size": fs.cluster, "record_size": fs.rec_size, "records": fs.n_records, "clusters": fs.total_clusters},
-                                  "findings": [f.as_dict() for f in findings]}, indent=2))
-            else:
-                print(report_text(fs, findings, args.max, st, args.target, time.time() - t0, args.quiet))
-            return 1 if any(f.severity in ("high", "medium") for f in findings) else 0
+                sys.stderr.write(f"\r  scanning MFT {i * 100 // max(n, 1)}% ")
+        res = scan(args.target, args.offset, args.partition, args.heuristics, progress, lambda m: print(m, file=sys.stderr), with_map=bool(args.html))
+        if tty:
+            sys.stderr.write("\r" + " " * 30 + "\r")
+        if args.csv:
+            report_csv(res.findings, args.csv)
+        if args.html:
+            with open(args.html, "w", encoding="utf-8") as hf:
+                hf.write(report_html(res.info, res.findings, args.target, res.cmap))
+        if args.json:
+            print(json_text(res))
+        else:
+            print(report_text(res.info, res.findings, args.max, st, args.target, res.elapsed, args.quiet))
+        return 1 if any(f.severity in ("high", "medium") for f in res.findings) else 0
     except PermissionError:
         print("Permission denied. Run as Administrator/root, or analyse a raw image instead.", file=sys.stderr)
     except FileNotFoundError:

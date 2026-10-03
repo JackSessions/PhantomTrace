@@ -1,0 +1,4 @@
+include README.md
+include LICENSE*
+recursive-include tests *.py *.ps1 *.sh
+recursive-include docs *.png

@@ -36,15 +36,24 @@ NTFS describes the same disk in several places. Honest activity keeps those desc
 
 Also writes a shareable report (`--html report.html`):
 
-![HTML report](docs/report.png)
+![HTML report](https://raw.githubusercontent.com/JackSessions/PhantomTrace/main/docs/report.png)
 
 ## Install
 
 ```
-pipx install git+https://github.com/JackSessions/PhantomTrace   # gives you the `phantom-trace` command
+pipx install phantom-trace-ntfs                                 # once published on PyPI; gives you the `phantom-trace` command
+pipx install git+https://github.com/JackSessions/PhantomTrace   # latest from GitHub
 # or just run the single file:
 python3 phantom_trace.py image.img
 ```
+
+## Point-and-click GUI
+
+```
+phantom-trace --gui          # or: phantom-trace-gui   (and optionally an image path to scan straight away)
+```
+
+Opens a page in your browser: pick an image (a built-in file browser helps), choose the NTFS volume, press **Scan**. You get the verdict, severity counts, the volume map and a findings table you can click for explanations, plus **HTML / CSV / JSON downloads**. It runs only on your own computer: it listens on `127.0.0.1`, needs a random one-time token in the address, and only ever reads. No extra packages, no Tk required, same on Windows and Linux.
 
 ## Windows
 
@@ -136,6 +145,11 @@ The HTML report includes a **volume map**: every square is a slice of the disk, 
 - Timeline output (CSV / bodyfile) and `$STANDARD_INFORMATION` vs `$FILE_NAME` timestamp comparison
 - Compare results with The Sleuth Kit and MFTECmd on shared images
 
-## Licence
+## Author
 
-Not set yet. Add one before others reuse the code.
+Created and maintained by **Jack Sessions** ([jacksessions](https://github.com/JackSessions), security researcher in mobile security, DFIR and counterintelligence).
+Parts of the code were written with AI assistance (Claude, and Qwen for the first prototype); every check is covered by the tests above, and findings are leads to verify, not proof.
+
+## Licence and credit
+
+MIT licence (see `LICENSE`): free to use, change and share, **as long as the copyright notice and licence text stay with the code**. If you use PhantomTrace in a report, talk, course or another tool, please credit **Jack Sessions** and link to https://github.com/JackSessions/PhantomTrace. `CITATION.cff` has the details (GitHub shows a "Cite this repository" button).

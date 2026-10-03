@@ -4,7 +4,11 @@ import json
 import os
 import shutil
 import tempfile
+import threading
+import time
 import unittest
+import urllib.error
+import urllib.request
 from contextlib import redirect_stdout
 
 import images
@@ -101,7 +105,10 @@ class ChurnedVolumeTests(unittest.TestCase):
     def test_volume_used_through_a_live_mount_has_no_findings(self):
         with tempfile.TemporaryDirectory() as d:
             path = os.path.join(d, "churn.img")
-            images.build_churned(path)
+            try:
+                images.build_churned(path)
+            except images.MountUnavailable as e:
+                self.skipTest(f"cannot mount an NTFS image here: {e}")
             self.assertEqual(checks(path), set(), "false positives on a realistically used volume")
 
 
@@ -121,6 +128,96 @@ class PartitionTests(unittest.TestCase):
             disk = os.path.join(d, "disk.img")
             images.build_disk(disk, "gpt", tamper=images.tamper_bitmap_free)
             self.assertEqual(pt.main([disk, "-q", "--no-color"]), 1)
+
+
+@unittest.skipUnless(images.have_tools(), "needs ntfs-3g image tools")
+class GuiTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        import phantom_trace_gui as gui
+        cls.tmp = tempfile.mkdtemp()
+        cls.clean = os.path.join(cls.tmp, "clean.img")
+        images.build_clean(cls.clean)
+        cls.bad = os.path.join(cls.tmp, "bad.img")
+        shutil.copy(cls.clean, cls.bad)
+        images.tamper_bitmap_free(cls.bad)
+        cls.httpd, cls.token = gui.make_server(0)
+        cls.base = f"http://127.0.0.1:{cls.httpd.server_address[1]}"
+        threading.Thread(target=cls.httpd.serve_forever, daemon=True).start()
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.httpd.shutdown()
+        cls.httpd.server_close()
+        shutil.rmtree(cls.tmp, ignore_errors=True)
+
+    def call(self, path, body=None, token=True, host=None):
+        req = urllib.request.Request(self.base + path, data=None if body is None else json.dumps(body).encode(), method="POST" if body is not None else "GET")
+        if token:
+            req.add_header("X-PT-Token", self.token)
+        if host:
+            req.add_header("Host", host)
+        try:
+            with urllib.request.urlopen(req) as r:
+                return r.status, r.read()
+        except urllib.error.HTTPError as e:
+            return e.code, e.read()
+
+    def scan(self, path):
+        code, raw = self.call("/api/scan", {"path": path})
+        self.assertEqual(code, 200)
+        job = json.loads(raw)["job"]
+        for _ in range(100):
+            code, raw = self.call(f"/api/status?job={job}")
+            data = json.loads(raw)
+            if data["state"] != "running":
+                return job, data
+            time.sleep(0.05)
+        self.fail("scan did not finish")
+
+    def test_requires_token_and_local_host(self):
+        self.assertEqual(self.call("/api/ls", token=False)[0], 403)
+        self.assertEqual(self.call("/", host="evil.example.com")[0], 403)
+        self.assertEqual(self.call(f"/?token={self.token}")[0], 200)
+
+    def test_scan_clean_and_tampered(self):
+        _, ok = self.scan(self.clean)
+        self.assertEqual((ok["state"], ok["findings"]), ("done", []))
+        job, bad = self.scan(self.bad)
+        self.assertIn("clusters_free_in_bitmap", {f["check"] for f in bad["findings"]})
+        self.assertTrue(bad["cmap"]["cells"] > 0)
+        for fmt, needle in (("html", "PhantomTrace"), ("csv", "severity"), ("json", "findings")):
+            code, raw = self.call(f"/api/report?job={job}&fmt={fmt}")
+            self.assertEqual(code, 200)
+            self.assertIn(needle, raw.decode())
+
+    def test_errors_are_reported_not_raised(self):
+        _, missing = self.scan(os.path.join(self.tmp, "nope.img"))
+        self.assertEqual(missing["state"], "error")
+        junk = os.path.join(self.tmp, "junk.bin")
+        with open(junk, "wb") as f:
+            f.write(os.urandom(8192))
+        self.assertEqual(self.scan(junk)[1]["state"], "error")
+
+    def test_directory_listing(self):
+        code, raw = self.call("/api/ls?path=" + urllib.request.quote(self.tmp))
+        names = {e["name"] for e in json.loads(raw)["entries"]}
+        self.assertIn("clean.img", names)
+
+
+class MetadataTests(unittest.TestCase):
+    def test_pyproject_version_matches_the_module(self):
+        text = open(os.path.join(os.path.dirname(__file__), "..", "pyproject.toml"), encoding="utf-8").read()
+        self.assertIn(f'version = "{pt.__version__}"', text)
+
+    def test_help_and_list_checks_run(self):
+        buf = io.StringIO()
+        with redirect_stdout(buf):
+            self.assertEqual(pt.main(["--list-checks"]), 0)
+        self.assertIn("clusters_free_in_bitmap", buf.getvalue())
+        with self.assertRaises(SystemExit) as cm, redirect_stdout(io.StringIO()):
+            pt.main(["--help"])
+        self.assertEqual(cm.exception.code, 0)
 
 
 class RunListTests(unittest.TestCase):

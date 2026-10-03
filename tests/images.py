@@ -113,12 +113,20 @@ def can_mount() -> bool:
     return have_tools() and shutil.which("ntfs-3g") is not None and os.path.exists("/dev/fuse") and shutil.which("fusermount") is not None
 
 
+class MountUnavailable(Exception):
+    """ntfs-3g could not mount the image (common on CI runners and in containers without FUSE permission)."""
+
+
 def build_churned(path: str, size_mb: int = 128):
     """A volume used the way a real one is: created through a live ntfs-3g mount with many files, deletions, rewrites and fragmentation."""
     subprocess.run(["truncate", "-s", f"{size_mb}M", path], check=True)
     subprocess.run(["mkntfs", "-F", "-f", "-Q", "-L", "churn", "-c", "4096", path], check=True, capture_output=True)
     mnt = tempfile.mkdtemp()
-    subprocess.run(["ntfs-3g", path, mnt, "-o", "rw"], check=True, capture_output=True)
+    try:
+        subprocess.run(["ntfs-3g", path, mnt, "-o", "rw"], check=True, capture_output=True)
+    except subprocess.CalledProcessError as e:
+        os.rmdir(mnt)
+        raise MountUnavailable(e.stderr.decode(errors="replace").strip()[:200]) from e
     try:
         for d in ("a", "a/b", "c"):
             os.makedirs(os.path.join(mnt, d), exist_ok=True)

@@ -1,0 +1,10 @@
+cff-version: 1.2.0
+message: "If you use PhantomTrace, please credit it as below."
+title: "PhantomTrace: NTFS cross-layer consistency checker"
+type: software
+authors:
+  - name: "Jack Sessions"
+repository-code: "https://github.com/JackSessions/PhantomTrace"
+license: MIT
+version: 0.5.0
+date-released: 2026-10-03
