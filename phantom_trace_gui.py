@@ -96,7 +96,7 @@ class Handler(BaseHTTPRequestHandler):
         if not self._guard(q):
             return
         if u.path == "/":
-            self._send(200, PAGE.replace("__VERSION__", pt.__version__).encode(), "text/html; charset=utf-8")
+            self._send(200, PAGE.replace("__DESIGN__", pt.DESIGN_CSS).replace("__SHIELD__", pt.SHIELD_SVG).replace("__VERSION__", pt.__version__).encode(), "text/html; charset=utf-8")
         elif u.path == "/api/ls":
             self._ls((q.get("path") or [""])[0])
         elif u.path == "/api/volumes":
@@ -206,35 +206,10 @@ def main(argv=None) -> int:
 
 PAGE = r"""<!doctype html><html lang="en"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <title>PhantomTrace</title>
-<style>
-:root{color-scheme:dark;--bg:#07090c;--panel:#0d1217;--line:#1c252d;--text:#d7e3ea;--mut:#7fa7b5;--cy:#38d6ff;--am:#ffb02e;--red:#ff4d5e;--grn:#4af0a2}
-*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--text);font:15px/1.5 system-ui,sans-serif}
-main{max-width:70rem;margin:0 auto;padding:1.4rem 1rem 3rem}
-h1{margin:0;font:800 clamp(1.6rem,4vw,2.4rem) ui-monospace,monospace;letter-spacing:.04em;background:linear-gradient(90deg,#ff5f6d,#ffb02e,#ffe14a,#4af0a2,#38d6ff,#8b7bff,#e04aff);-webkit-background-clip:text;background-clip:text;color:transparent;display:inline-block}
-.sub{color:var(--mut);font:13px ui-monospace,monospace;margin:.2rem 0 1.2rem}
-.panel{background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:1rem}
-.row{display:flex;gap:.6rem;flex-wrap:wrap;align-items:center}.row+.row{margin-top:.7rem}
-input[type=text],select{background:#05080b;color:var(--text);border:1px solid var(--line);border-radius:6px;padding:.55rem .7rem;font:14px ui-monospace,monospace}
-input[type=text]{flex:1 1 20rem}
-button{background:transparent;color:var(--text);border:1px solid var(--line);border-radius:6px;padding:.5rem .9rem;font:inherit;cursor:pointer}
-button:hover{border-color:var(--cy);color:var(--cy)}button.go{background:var(--cy);color:#03141a;border-color:var(--cy);font-weight:700}button.go:hover{color:#03141a;filter:brightness(1.1)}button:disabled{opacity:.5;cursor:default}
-label{color:var(--mut);font-size:.9rem}
-.bar{height:6px;background:#10181e;border-radius:3px;overflow:hidden;margin-top:.8rem;display:none}.bar i{display:block;height:100%;width:0;background:linear-gradient(90deg,#ff5f6d,#ffb02e,#4af0a2,#38d6ff,#e04aff);transition:width .15s}
-.verdict{border-left:4px solid var(--grn);background:var(--panel);padding:.8rem 1rem;margin:1rem 0;border-radius:0 8px 8px 0}.verdict.bad{border-color:var(--red)}.verdict.med{border-color:var(--am)}.verdict.low{border-color:var(--cy)}
-.tiles{display:flex;gap:.7rem;margin:.2rem 0 1rem}.tile{flex:1;border:1px solid var(--c);border-radius:8px;padding:.6rem;text-align:center}.tile b{display:block;font-size:1.7rem;color:var(--c)}.tile span{color:var(--mut);font-size:.8rem;text-transform:uppercase;letter-spacing:.06em}
-table{width:100%;border-collapse:collapse}th,td{text-align:left;padding:.55rem .5rem;border-bottom:1px solid var(--line);vertical-align:top}th{font:12px ui-monospace,monospace;color:var(--mut);text-transform:uppercase}
-tr.f{cursor:pointer}tr.f:hover{background:#0b1218}.chip{display:inline-block;border:1px solid var(--c);color:var(--c);border-radius:999px;padding:0 .6rem;font:12px ui-monospace,monospace;text-transform:uppercase}
-code{color:var(--am)}.why{color:var(--mut);font-size:.85rem;margin-top:.3rem;display:none}tr.open .why{display:block}
-canvas{display:block;max-width:100%;image-rendering:pixelated;border:1px solid var(--line);border-radius:6px;background:#05070a}
-h2{font:600 1rem ui-monospace,monospace;color:var(--mut);margin:1.6rem 0 .5rem}
-.err{border-left:4px solid var(--red);background:#1a0c10;padding:.7rem 1rem;border-radius:0 8px 8px 0;margin-top:1rem;display:none}
-.dl a{color:var(--cy);margin-right:1rem;font:14px ui-monospace,monospace}small,.mut{color:var(--mut)}
-#modal{position:fixed;inset:0;background:rgba(0,0,0,.7);display:none;place-items:center;z-index:9}#modal .box{width:min(42rem,94vw);max-height:80vh;display:flex;flex-direction:column}
-#list{overflow:auto;border:1px solid var(--line);border-radius:6px;margin:.6rem 0}#list div{padding:.35rem .6rem;cursor:pointer;display:flex;justify-content:space-between;gap:1rem;font:13px ui-monospace,monospace}#list div:hover{background:#0b1218}
-footer{margin-top:2.5rem;color:var(--mut);font-size:.85rem}footer a{color:var(--cy)}
-</style>
+<style>__DESIGN__</style>
 <main>
-<h1>PhantomTrace</h1><div class="sub">v__VERSION__ | read-only NTFS cross-layer consistency checker | everything runs on this computer</div>
+<div class="head">__SHIELD__<div><h1>PhantomTrace</h1><div class="sub">v__VERSION__ &middot; read-only NTFS cross-layer consistency checker &middot; everything runs on this computer</div></div></div>
+<div class="quote"><q id="qt"></q><span>DFIR field note</span><button id="qn" title="Another one">Another</button></div>
 <div class="panel">
   <div class="row"><input id="path" type="text" placeholder="Path to a raw NTFS image, disk image or device (e.g. /home/you/disk.img or \\.\C:)" spellcheck="false"><button id="browse">Browse…</button></div>
   <div class="row"><label>NTFS volume <select id="part"><option value="1">auto</option></select></label>
@@ -258,7 +233,8 @@ footer{margin-top:2.5rem;color:var(--mut);font-size:.85rem}footer a{color:var(--
 <script>
 const Q=new URLSearchParams(location.search),TOKEN=Q.get('token'),$=id=>document.getElementById(id),H={'X-PT-Token':TOKEN};
 const api=(u,o={})=>fetch(u,{...o,headers:{...H,...(o.headers||{})}}).then(r=>r.json());
-const COL={high:'#ff4d5e',medium:'#ffb02e',low:'#38d6ff'};let job=null,timer=null;
+const COL={high:'#f28b82',medium:'#fdd663',low:'#8ab4f8'};
+const QUOTES=['The file system keeps several diaries. Honest activity keeps them in agreement.','Free space is not always empty.','A deleted record is a story, not an absence.','Trust the layers that agree. Question the ones that do not.','Read-only first, always.','A finding is a lead. A second tool makes it a fact.','Structure is harder to fake than a timestamp.','Image first, analyse the copy.','Calm minds read better disks.','Every inconsistency has a cause. Find it before you name it.'];let qi=-1;function newQuote(){let i;do{i=Math.floor(Math.random()*QUOTES.length)}while(i===qi);qi=i;$('qt').textContent=QUOTES[i]}$('qn').onclick=newQuote;newQuote();let job=null,timer=null;
 const esc=s=>String(s).replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
 async function volumes(){const p=$('path').value.trim();const sel=$('part');sel.innerHTML='<option value="1">auto</option>';if(!p)return;
   const r=await api('/api/volumes?path='+encodeURIComponent(p));
@@ -286,7 +262,7 @@ function render(s){const f=s.findings,n={high:0,medium:0,low:0};f.forEach(x=>n[x
   document.querySelectorAll('tr.f').forEach(r=>r.onclick=()=>r.classList.toggle('open'));
   $('out').style.display='block';
   const M=s.cmap,cv=$('map');if(M&&M.cells){const cols=M.cols,sz=Math.max(3,Math.floor(Math.min(1000,cv.parentElement.clientWidth)/cols)),rws=Math.ceil(M.cells/cols);cv.width=sz*cols;cv.height=sz*rws;const g=cv.getContext('2d');
-    for(let i=0;i<M.cells;i++){const x=(i%cols)*sz,y=Math.floor(i/cols)*sz;g.fillStyle=`rgba(56,214,255,${(0.07+0.85*M.frac[i]/100).toFixed(2)})`;g.fillRect(x,y,sz-1,sz-1);if(M.flag[i]){g.strokeStyle='#ff4d5e';g.lineWidth=2;g.strokeRect(x+1,y+1,sz-3,sz-3)}}
+    for(let i=0;i<M.cells;i++){const x=(i%cols)*sz,y=Math.floor(i/cols)*sz;g.fillStyle=`rgba(138,180,248,${(0.07+0.85*M.frac[i]/100).toFixed(2)})`;g.fillRect(x,y,sz-1,sz-1);if(M.flag[i]){g.strokeStyle='#f28b82';g.lineWidth=2;g.strokeRect(x+1,y+1,sz-3,sz-3)}}
     $('mapnote').textContent=`Each square is ${M.per} cluster(s). Brightness is how full that slice is according to the volume bitmap. Red outlines contain clusters named in findings.`}
 }
 let cwd='';async function ls(p){const r=await api('/api/ls?path='+encodeURIComponent(p||''));cwd=r.path;$('cwd').textContent=r.path;

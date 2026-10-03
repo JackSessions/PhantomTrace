@@ -25,7 +25,7 @@ import time
 from datetime import datetime, timedelta
 from dataclasses import dataclass, field
 
-__version__ = "0.6.0"
+__version__ = "0.6.1"
 __author__ = "Jack Sessions"
 __license__ = "MIT"
 __url__ = "https://github.com/JackSessions/PhantomTrace"
@@ -571,33 +571,88 @@ def cluster_map(fs: Ntfs, findings: list[Finding], cols: int = 128, rows: int = 
     return {"cols": cols, "per": per, "cells": n, "frac": frac, "flag": flag}
 
 
+SHIELD_SVG = ('<svg class="shield" viewBox="0 0 48 56" aria-hidden="true"><path d="M24 4 7 10v16c0 12 7 20 17 26" fill="none" stroke="#4285f4" stroke-width="4.6" stroke-linecap="round" stroke-linejoin="round"/>'
+              '<path d="M24 4l17 6v16c0 12-7 20-17 26" fill="none" stroke="#34a853" stroke-width="4.6" stroke-linecap="round" stroke-linejoin="round"/>'
+              '<path d="M24 42c-5-3-9-7-9-13V21" fill="none" stroke="#fbbc04" stroke-width="4.2" stroke-linecap="round" stroke-linejoin="round"/>'
+              '<path d="M15 21l9-3 9 3v8c0 6-4 10-9 13" fill="none" stroke="#ea4335" stroke-width="4.2" stroke-linecap="round" stroke-linejoin="round"/></svg>')
+
+# One design system for the GUI and the HTML report: frosted glass over a night-security backdrop, Google colours.
+DESIGN_CSS = r"""
+:root{color-scheme:dark;--bg:#0f1316;--panel:#171c20;--line:#2a3238;--text:#e8eaed;--mut:#9aa0a6;--soft:#bdc1c6;--cy:#8ab4f8;--am:#fdd663;--red:#f28b82;--grn:#81c995;--gb:#4285f4;--gr:#ea4335;--gy:#fbbc04;--gg:#34a853;
+--sans:"Google Sans","Product Sans","Space Grotesk",Inter,"Segoe UI",Roboto,"Helvetica Neue",system-ui,sans-serif;--mono:"JetBrains Mono","Roboto Mono",ui-monospace,SFMono-Regular,Menlo,Consolas,monospace}
+@property --ang{syntax:"<angle>";initial-value:0deg;inherits:false}
+@keyframes spin{to{--ang:360deg}}@keyframes drift{to{transform:translate3d(3%,2.5%,0) scale(1.1)}}
+@keyframes scan{0%{top:-4%;opacity:0}8%{opacity:.9}92%{opacity:.9}100%{top:104%;opacity:0}}
+@keyframes rise{from{opacity:0;transform:translateY(8px)}to{opacity:1;transform:none}}
+@keyframes shieldglow{0%,100%{filter:drop-shadow(0 0 8px rgba(66,133,244,.6))}33%{filter:drop-shadow(0 0 10px rgba(234,67,53,.55))}66%{filter:drop-shadow(0 0 10px rgba(251,188,4,.5))}}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--text);font:15px/1.6 var(--sans);position:relative;min-height:100vh;-webkit-font-smoothing:antialiased}
+body::before{content:"";position:fixed;inset:-18%;z-index:-2;pointer-events:none;filter:blur(24px);animation:drift 32s ease-in-out infinite alternate;
+background:radial-gradient(34% 34% at 12% 16%,rgba(66,133,244,.32),transparent 70%),radial-gradient(28% 28% at 90% 10%,rgba(234,67,53,.20),transparent 70%),radial-gradient(32% 32% at 82% 90%,rgba(52,168,83,.20),transparent 70%),radial-gradient(26% 26% at 14% 88%,rgba(251,188,4,.15),transparent 70%)}
+body::after{content:"";position:fixed;inset:0;z-index:-1;pointer-events:none;background-image:linear-gradient(rgba(255,255,255,.04) 1px,transparent 1px),linear-gradient(90deg,rgba(255,255,255,.04) 1px,transparent 1px);background-size:46px 46px;-webkit-mask-image:radial-gradient(75% 65% at 50% 25%,#000 25%,transparent 100%);mask-image:radial-gradient(75% 65% at 50% 25%,#000 25%,transparent 100%)}
+main{max-width:70rem;margin:0 auto;padding:1.6rem 1rem 3rem}
+.panel,.head,.verdict,.tile,.stat,.quote,.box{background:color-mix(in oklab,var(--panel) 58%,transparent);-webkit-backdrop-filter:blur(18px) saturate(1.5);backdrop-filter:blur(18px) saturate(1.5);border:1px solid rgba(255,255,255,.09);box-shadow:inset 0 1px 0 rgba(255,255,255,.07),0 14px 40px -22px #000c}
+.panel{border-radius:18px;padding:1.1rem;animation:rise .35s both}
+.head{position:relative;overflow:hidden;display:flex;gap:1.1rem;align-items:center;border-radius:22px;padding:1.2rem 1.5rem;margin-bottom:1rem;animation:rise .5s both}
+.head>*{position:relative;z-index:1}.head::after{content:"";position:absolute;z-index:0;left:0;right:0;height:2px;top:-4%;background:linear-gradient(90deg,transparent,#4285f4,#ea4335,#fbbc04,#34a853,transparent);animation:scan 7s linear infinite;pointer-events:none}
+.shield{width:3rem;height:3.5rem;flex:none;animation:shieldglow 6s ease-in-out infinite}
+h1{margin:0;font:700 clamp(1.7rem,4vw,2.5rem) var(--sans);letter-spacing:-.02em;background:linear-gradient(90deg,#4285f4,#ea4335 40%,#fbbc04 70%,#34a853);-webkit-background-clip:text;background-clip:text;color:transparent;display:inline-block}
+.sub,.meta{color:var(--mut);font-size:13px;margin:.15rem 0 0}.meta{font-family:var(--mono);margin:.4rem 0 1.2rem}
+.quote{margin:0 0 1rem;padding:.8rem 1.2rem;border-radius:16px;display:flex;align-items:center;gap:.8rem;flex-wrap:wrap}.quote q{font-size:1.02rem;font-weight:500;quotes:"\201C" "\201D"}.quote q::before{color:#4285f4}.quote span{color:var(--mut);font-size:.8rem}
+.row{display:flex;gap:.6rem;flex-wrap:wrap;align-items:center}.row+.row{margin-top:.7rem}
+input[type=text],select{background:color-mix(in oklab,#12171b 66%,transparent);color:var(--text);border:1px solid rgba(255,255,255,.1);border-radius:12px;padding:.6rem .85rem;font:14px/1.4 var(--sans);transition:border-color .15s,box-shadow .15s}
+input[type=text]{flex:1 1 20rem}input:focus,select:focus{outline:none;border-color:var(--cy);box-shadow:0 0 0 3px rgba(138,180,248,.22)}
+label{color:var(--mut);font-size:.9rem}
+/* rainbow glowing ring buttons */
+button{position:relative;isolation:isolate;background:rgba(255,255,255,.04);color:var(--text);border:1px solid rgba(255,255,255,.12);border-radius:999px;padding:.55rem 1.15rem;font:500 14px var(--sans);cursor:pointer;transition:background .15s,transform .06s,color .15s}
+button::before{content:"";position:absolute;inset:-2px;border-radius:inherit;padding:2px;background:conic-gradient(from var(--ang),#4285f4,#ea4335,#fbbc04,#34a853,#4285f4);-webkit-mask:linear-gradient(#000 0 0) content-box,linear-gradient(#000 0 0);-webkit-mask-composite:xor;mask-composite:exclude;opacity:0;transition:opacity .28s;animation:spin 4.5s linear infinite;pointer-events:none}
+button::after{content:"";position:absolute;inset:-5px;border-radius:inherit;background:conic-gradient(from var(--ang),#4285f4,#ea4335,#fbbc04,#34a853,#4285f4);filter:blur(11px);opacity:0;transition:opacity .28s;animation:spin 4.5s linear infinite;pointer-events:none;z-index:-1}
+button:hover,button:focus-visible{background:rgba(255,255,255,.09);outline:none}button:hover::before,button:focus-visible::before{opacity:1}button:hover::after,button:focus-visible::after{opacity:.32}button:active{transform:translateY(1px)}
+button.go{background:linear-gradient(135deg,#4285f4,#3367d6);color:#fff;border-color:transparent;font-weight:600;text-shadow:0 1px 0 #0003;box-shadow:inset 0 1px 0 #fff4}
+button.go::before{opacity:.95}button.go::after{opacity:.26}button.go:hover{background:linear-gradient(135deg,#5a95f5,#3b78e7);transform:translateY(-1px)}button.go:hover::after{opacity:.5}button:disabled{opacity:.55;cursor:default}
+.bar{height:6px;background:rgba(255,255,255,.07);border-radius:3px;overflow:hidden;margin-top:.9rem;display:none}.bar i{display:block;height:100%;width:0;background:linear-gradient(90deg,#4285f4,#ea4335,#fbbc04,#34a853);transition:width .15s}
+.verdict{border-left:4px solid var(--grn);border-radius:0 14px 14px 0;padding:.85rem 1.1rem;margin:1rem 0}.verdict.bad{border-left-color:var(--red)}.verdict.med{border-left-color:var(--am)}.verdict.low{border-left-color:var(--cy)}
+.tiles,.stats{display:flex;gap:.8rem;margin:.2rem 0 1rem}.tile,.stat{flex:1;border-radius:16px;padding:.7rem;text-align:center;border-color:color-mix(in oklab,var(--c) 55%,transparent);background:color-mix(in oklab,var(--c) 9%,color-mix(in oklab,var(--panel) 58%,transparent))}
+.tile b,.stat b{display:block;font-size:1.9rem;color:var(--c)}.tile span,.stat span{color:var(--mut);font-size:.78rem;text-transform:uppercase;letter-spacing:.07em}
+table{width:100%;border-collapse:collapse}th,td{text-align:left;padding:.6rem .55rem;border-bottom:1px solid rgba(255,255,255,.08);vertical-align:top}th{font:600 11px var(--sans);letter-spacing:.07em;color:var(--mut);text-transform:uppercase}
+tr.f{cursor:pointer;transition:background .15s}tr.f:hover{background:rgba(255,255,255,.04)}
+.chip{display:inline-block;border:1px solid var(--c);color:var(--c);border-radius:999px;padding:0 .65rem;font:600 11px var(--sans);text-transform:uppercase;letter-spacing:.05em}
+code{color:var(--am);font-family:var(--mono);font-size:.9em}.why{color:var(--mut);font-size:.85rem;margin-top:.3rem}.f .why{display:none}tr.open .why{display:block}
+canvas{display:block;max-width:100%;image-rendering:pixelated;border:1px solid rgba(255,255,255,.09);border-radius:12px;background:rgba(5,7,10,.6)}
+h2{font:600 .78rem var(--sans);letter-spacing:.1em;text-transform:uppercase;color:var(--mut);margin:1.7rem 0 .5rem}
+.err{border-left:4px solid var(--red);background:rgba(43,23,22,.7);padding:.75rem 1.1rem;border-radius:0 14px 14px 0;margin-top:1rem;display:none}
+.dl a{color:var(--cy);font:500 13px var(--sans);text-decoration:none;display:inline-block;padding:.32rem .9rem;margin:0 .35rem .35rem 0;border-radius:999px;background:rgba(138,180,248,.12)}.dl a:hover{background:rgba(138,180,248,.24)}
+small,.mut{color:var(--mut)}a{color:var(--cy)}
+#modal{position:fixed;inset:0;background:rgba(0,0,0,.65);display:none;place-items:center;z-index:9}#modal .box{width:min(42rem,94vw);max-height:80vh;display:flex;flex-direction:column;border-radius:20px;padding:1.1rem}
+#list{overflow:auto;border:1px solid rgba(255,255,255,.09);border-radius:12px;margin:.6rem 0}#list div{padding:.4rem .7rem;cursor:pointer;display:flex;justify-content:space-between;gap:1rem;font:13px var(--mono)}#list div:hover{background:rgba(255,255,255,.06)}
+footer{margin-top:2.5rem;color:var(--mut);font-size:.85rem}
+@media(max-width:40rem){.tiles,.stats{flex-direction:column}.head{padding:1rem}}
+@media(prefers-reduced-motion:reduce){*,*::before,*::after{animation:none!important;transition:none!important}}
+"""
+
+
 def report_html(info: dict, findings: list[Finding], target: str, cm: dict) -> str:
     e = html.escape
     color, msg = verdict(findings)
-    chip = {"high": "#ff4d5e", "medium": "#ffb02e", "low": "#38d6ff"}
+    chip = {"high": "#f28b82", "medium": "#fdd663", "low": "#8ab4f8"}
     rows = "".join(
         f'<tr><td><span class="chip" style="--c:{chip[f.severity]}">{f.severity}</span></td><td><code>{e(f.check)}</code></td>'
         f'<td>{"" if f.record is None else f.record}</td><td>{e(f.name)}</td><td>{e(f.message)}<div class="why">{e(WHY[f.check])}</div></td></tr>'
         for f in sorted(findings, key=lambda x: ("high", "medium", "low").index(x.severity)))
     counts = "".join(f'<div class="stat" style="--c:{chip[s]}"><b>{sum(f.severity == s for f in findings)}</b><span>{s}</span></div>' for s in ("high", "medium", "low"))
-    verdict_col = {"red": "#ff4d5e", "yellow": "#ffb02e", "cyan": "#38d6ff", "green": "#4af0a2"}[color]
+    verdict_col = {"red": "#f28b82", "yellow": "#fdd663", "cyan": "#8ab4f8", "green": "#81c995"}[color]
     return f"""<!doctype html><html lang="en"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-<title>PhantomTrace report</title><style>
-:root{{color-scheme:dark}}body{{margin:0;background:#07090c;color:#d7e3ea;font:15px/1.5 system-ui,sans-serif}}main{{max-width:64rem;margin:0 auto;padding:2rem 1rem 4rem}}
-h2{{font:600 1rem ui-monospace,monospace;color:#7fa7b5;margin:1.6rem 0 .4rem}}canvas{{display:block;max-width:100%;image-rendering:pixelated;border:1px solid #1c252d;border-radius:6px;background:#05070a}}h1{{font:700 1.6rem ui-monospace,monospace;letter-spacing:.04em;margin:0;background:linear-gradient(90deg,#ff5f6d,#ffb02e,#ffe14a,#4af0a2,#38d6ff,#8b7bff,#e04aff);-webkit-background-clip:text;background-clip:text;color:transparent;display:inline-block}}small,.why{{color:#7fa7b5}}.why{{font-size:.82rem;margin-top:.3rem}}
-.meta{{margin:.4rem 0 1.4rem;font:13px ui-monospace,monospace;color:#7fa7b5}}.verdict{{border-left:4px solid {verdict_col};padding:.7rem 1rem;background:#0c1116;margin:1rem 0}}
-.stats{{display:flex;gap:.8rem;margin:1rem 0}}.stat{{flex:1;border:1px solid var(--c);border-radius:6px;padding:.6rem;text-align:center}}.stat b{{display:block;font-size:1.6rem;color:var(--c)}}
-table{{width:100%;border-collapse:collapse;margin-top:1rem}}td,th{{text-align:left;padding:.55rem .5rem;border-bottom:1px solid #1c252d;vertical-align:top}}th{{font:12px ui-monospace,monospace;color:#7fa7b5;text-transform:uppercase}}
-.chip{{display:inline-block;border:1px solid var(--c);color:var(--c);border-radius:999px;padding:0 .6rem;font:12px ui-monospace,monospace;text-transform:uppercase}}code{{color:#ffb02e}}
-</style><main><h1>PhantomTrace</h1><div class="meta">v{__version__} | {e(target)} | {info['cluster_size']} B clusters, {info['record_size']} B records, {info['records']} MFT records, {info['clusters']} clusters</div>
+<title>PhantomTrace report</title><style>{DESIGN_CSS}.verdict{{border-left-color:{verdict_col}}}</style>
+<main><div class="head">{SHIELD_SVG}<div><h1>PhantomTrace</h1><div class="sub">Read-only NTFS cross-layer consistency report</div></div></div>
+<div class="meta">v{__version__} | {e(target)} | {info['cluster_size']} B clusters, {info['record_size']} B records, {info['records']} MFT records, {info['clusters']} clusters</div>
 <div class="verdict"><b>Verdict.</b> {e(msg)}</div><div class="stats">{counts}</div>
 <h2>Volume map</h2><canvas id="map" height="10"></canvas>
 <p><small>Each square is a slice of the volume (<span id="per"></span> clusters). Brightness is how full that slice is according to the volume bitmap. Red outlines contain clusters named in findings.</small></p>
-<table><tr><th>Severity</th><th>Check</th><th>Record</th><th>Name</th><th>Finding</th></tr>{rows or '<tr><td colspan="5">No findings.</td></tr>'}</table>
+<h2>Findings</h2><table><tr><th>Severity</th><th>Check</th><th>Record</th><th>Name</th><th>Finding</th></tr>{rows or '<tr><td colspan="5">No findings.</td></tr>'}</table>
 <script>const M={json.dumps(cm)};const cv=document.getElementById('map'),cols=M.cols,sz=Math.floor(Math.min(1000,document.querySelector('main').clientWidth)/cols),rows=Math.ceil(M.cells/cols);
 cv.width=sz*cols;cv.height=sz*rows;const g=cv.getContext('2d');document.getElementById('per').textContent=M.per;
-for(let i=0;i<M.cells;i++){{const x=(i%cols)*sz,y=Math.floor(i/cols)*sz,f=M.frac[i]/100;g.fillStyle=`rgba(56,214,255,${{(0.07+0.85*f).toFixed(2)}})`;g.fillRect(x,y,sz-1,sz-1);if(M.flag[i]){{g.strokeStyle='#ff4d5e';g.lineWidth=2;g.strokeRect(x+1,y+1,sz-3,sz-3);}}}}</script>
-<p><small>Created by <a href="{__url__}" style="color:#38d6ff">Jack Sessions</a> (PhantomTrace v{__version__}, MIT licence). Findings are leads, not proof. Confirm with a second tool (for example The Sleuth Kit) before drawing conclusions.</small></p></main></html>"""
+for(let i=0;i<M.cells;i++){{const x=(i%cols)*sz,y=Math.floor(i/cols)*sz,f=M.frac[i]/100;g.fillStyle=`rgba(138,180,248,${{(0.07+0.85*f).toFixed(2)}})`;g.fillRect(x,y,sz-1,sz-1);if(M.flag[i]){{g.strokeStyle='#f28b82';g.lineWidth=2;g.strokeRect(x+1,y+1,sz-3,sz-3);}}}}</script>
+<footer>Created by <a href="{__url__}">Jack Sessions</a> (PhantomTrace v{__version__}, MIT licence). Findings are leads, not proof. Confirm with a second tool (for example The Sleuth Kit) before drawing conclusions.</footer></main></html>"""
 
 
 def main(argv=None) -> int:

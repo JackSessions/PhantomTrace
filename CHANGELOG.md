@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.6.1
+- **New look** for the GUI and the HTML report: frosted glass over a night-security backdrop, Google colours, a four-colour shield, glowing rainbow-ring buttons, a DFIR field note, and reduced-motion support. One shared design in `phantom_trace.py`.
+- Fixes a release-ordering slip: 0.6.0 on PyPI was built before the new look was committed, so 0.6.1 is the first version with it.
+
 ## 0.6.0
 - First PyPI release (`pipx install phantom-trace-ntfs`).
 - README: "why would anyone use this", GUI screenshot, install and PyPI badges. Added `SECURITY.md`, `CONTRIBUTING.md`, issue templates (including a false-positive report) and `docs/RELEASING.md`.

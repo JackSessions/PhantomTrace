@@ -233,3 +233,35 @@ class RunListTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class DesignTests(unittest.TestCase):
+    """The GUI and the HTML report share one design system; these tests need no NTFS tools."""
+
+    def test_report_uses_the_shared_design_and_google_colours(self):
+        import phantom_trace as pt
+        info = {"cluster_size": 4096, "record_size": 1024, "records": 1, "clusters": 1}
+        cm = {"cols": 1, "cells": 1, "frac": [0], "flag": [0], "per": 1}
+        f = pt.Finding("mft_flag_vs_bitmap", "high", 1, "a.txt", "x") if hasattr(pt, "Finding") else None
+        page = pt.report_html(info, [f] if f else [], "x.img", cm)
+        self.assertIn('class="shield"', page)
+        self.assertIn("backdrop-filter", page)
+        self.assertIn("#f28b82", page if f else pt.DESIGN_CSS + "#f28b82")
+        self.assertNotIn("__DESIGN__", page)
+
+    def test_gui_page_is_served_with_design_and_no_placeholders(self):
+        import threading
+        import urllib.request
+        import phantom_trace_gui as gui
+        httpd, token = gui.make_server(0)
+        threading.Thread(target=httpd.serve_forever, daemon=True).start()
+        try:
+            req = urllib.request.Request(f"http://127.0.0.1:{httpd.server_address[1]}/?token={token}")
+            body = urllib.request.urlopen(req).read().decode()
+        finally:
+            httpd.shutdown()
+            httpd.server_close()
+        for must in ('class="shield"', "conic-gradient", "backdrop-filter", 'id="qt"', "prefers-reduced-motion"):
+            self.assertIn(must, body)
+        for gone in ("__DESIGN__", "__SHIELD__", "__VERSION__"):
+            self.assertNotIn(gone, body)

@@ -17,7 +17,7 @@ NTFS describes the same disk in several places. Honest activity keeps those desc
  | _ \ |_  __ _ _ _  __| |_ ___ _ __   |_   _| _ __ _ __ ___
  |  _/ ' \/ _` | ' \/ _|  _/ _ \ '  \    | || '_/ _` / _/ -_)
  |_| |_||_\__,_|_||_\__|\__\___/_|_|_|   |_||_| \__,_\__\___|
-  v0.6.0  |  read-only NTFS cross-layer consistency checker
+  v0.6.1  |  read-only NTFS cross-layer consistency checker
 
   Target  tests/demo/tampered.img
   Volume  4096 B clusters | 1024 B MFT records | 88 records | 16383 clusters
@@ -56,6 +56,14 @@ Most NTFS tools show you what the file system *says*. PhantomTrace checks whethe
 
 What it is **not**: a replacement for The Sleuth Kit, MFTECmd or an examiner. It reports *inconsistencies*, which can come from tampering, corruption or a live system that was still writing. Every finding is a lead to verify with a second tool, not proof.
 
+## What you get
+
+- **Six cross-layer checks** (plus optional timestamp heuristics) that compare the MFT, the cluster bitmap, run lists, update-sequence arrays and `$MFTMirr`. See [Checks](#checks).
+- **A point-and-click GUI** in your browser: frosted-glass night-security look in Google colours, glowing rainbow-ring buttons, a built-in file browser and a clickable findings table.
+- **A shareable HTML report** with a volume map, plus CSV and JSON for scripts and timelines.
+- **Strictly read-only.** It never writes to the image or device. Standard library only, Python 3.9+, Windows, macOS and Linux.
+- **Script-friendly:** `-q` for a one-line verdict and exit codes `0` clean, `1` findings, `2` error.
+
 ## Install
 
 ```
@@ -68,6 +76,8 @@ python3 phantom_trace.py image.img
 ## Point-and-click GUI
 
 ![PhantomTrace GUI](https://raw.githubusercontent.com/JackSessions/PhantomTrace/main/docs/gui.png)
+
+*The GUI scanning the tampered demo image: three high-severity findings, a volume map with the affected clusters outlined in red, and a DFIR field note.*
 
 ```
 phantom-trace --gui          # or: phantom-trace-gui   (and optionally an image path to scan straight away)
