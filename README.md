@@ -46,7 +46,22 @@ pipx install git+https://github.com/JackSessions/PhantomTrace   # gives you the 
 python3 phantom_trace.py image.img
 ```
 
-Try it in seconds (needs `ntfs-3g` for the image tools): `cd tests && python3 make_demo.py`, then run the tool on `tests/demo/tampered.img` and `tests/demo/clean.img`.
+## Quick test on Linux
+
+```
+sudo apt install ntfs-3g          # provides mkntfs, ntfscp and ntfs-3g
+./tests/quick.sh                  # unit tests, then the clean vs tampered demo
+```
+
+It builds a clean NTFS image and a tampered copy: the clean one should report nothing (exit `0`), the tampered one should report findings (exit `1`).
+
+To check a real NTFS disk or USB stick, image it first and analyse the image, so the original is never touched:
+
+```
+sudo dd if=/dev/sdXN of=disk.img bs=4M status=progress   # or: sudo ddrescue /dev/sdXN disk.img
+phantom-trace disk.img
+# a whole-disk image: find the partition start with `fdisk -l disk.img`, then pass --offset <start sector * 512>
+```
 
 ## Checks
 

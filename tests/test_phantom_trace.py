@@ -83,6 +83,15 @@ class DetectionTests(unittest.TestCase):
         self.assertEqual(pt.main([path]), 1)
 
 
+@unittest.skipUnless(images.can_mount(), "needs ntfs-3g plus FUSE to mount a volume")
+class ChurnedVolumeTests(unittest.TestCase):
+    def test_volume_used_through_a_live_mount_has_no_findings(self):
+        with tempfile.TemporaryDirectory() as d:
+            path = os.path.join(d, "churn.img")
+            images.build_churned(path)
+            self.assertEqual(checks(path), set(), "false positives on a realistically used volume")
+
+
 class RunListTests(unittest.TestCase):
     def test_decode_dense_sparse_and_negative_offset(self):
         # run 1: 4 clusters at LCN 0x10; run 2: 8 sparse clusters; run 3: 2 clusters at LCN 0x10 + (-0x10) = 0

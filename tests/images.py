@@ -107,3 +107,34 @@ SCENARIOS = {
     "torn_record": (tamper_torn, "bad_fixup"),
     "mirror": (tamper_mirror, "mirror_mismatch"),
 }
+
+
+def can_mount() -> bool:
+    return have_tools() and shutil.which("ntfs-3g") is not None and os.path.exists("/dev/fuse") and shutil.which("fusermount") is not None
+
+
+def build_churned(path: str, size_mb: int = 128):
+    """A volume used the way a real one is: created through a live ntfs-3g mount with many files, deletions, rewrites and fragmentation."""
+    subprocess.run(["truncate", "-s", f"{size_mb}M", path], check=True)
+    subprocess.run(["mkntfs", "-F", "-f", "-Q", "-L", "churn", "-c", "4096", path], check=True, capture_output=True)
+    mnt = tempfile.mkdtemp()
+    subprocess.run(["ntfs-3g", path, mnt, "-o", "rw"], check=True, capture_output=True)
+    try:
+        for d in ("a", "a/b", "c"):
+            os.makedirs(os.path.join(mnt, d), exist_ok=True)
+        rnd = lambda n: os.urandom(n)
+        for i in range(1, 121):
+            with open(f"{mnt}/a/f{i}.bin", "wb") as f: f.write(rnd(100 + (i * 7919) % 60000))
+        for i in range(3, 121, 3): os.remove(f"{mnt}/a/f{i}.bin")
+        for i in range(1, 41):
+            with open(f"{mnt}/a/b/g{i}.bin", "wb") as f: f.write(rnd(5000 + (i * 104729) % 120000))
+        for i in range(1, 301):
+            with open(f"{mnt}/c/t{i}.txt", "w") as f: f.write(f"tiny {i}\n")
+        for i in range(5, 41, 5):
+            shutil.copy(f"{mnt}/a/b/g{i}.bin", f"{mnt}/a/b/h{i}.bin"); os.remove(f"{mnt}/a/b/g{i}.bin")
+        with open(f"{mnt}/big.dat", "wb") as f: f.write(rnd(6_000_000))
+        with open(f"{mnt}/big.dat", "ab") as f: f.write(rnd(2_000_000))
+        os.sync()
+    finally:
+        subprocess.run(["fusermount", "-u", mnt], check=True)
+        os.rmdir(mnt)
