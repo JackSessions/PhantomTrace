@@ -1,34 +1,59 @@
 # PhantomTrace
 
-A small NTFS forensics prototype that cross-checks two layers of a volume and flags records where they disagree: the `$MFT` record's "in use" flag versus the allocation bitmap. Disagreement between layers is one place anti-forensic tampering (or ordinary corruption) can show up.
+![tests](https://github.com/JackSessions/PhantomTrace/actions/workflows/test.yml/badge.svg)
 
-> **Status: experimental prototype.** It has not been validated against known-tampered images, and it will produce false positives. See "Known limitations".
+NTFS describes the same disk in several places. Honest activity keeps those descriptions in agreement; tampering (and corruption) often doesn't. PhantomTrace reads a raw NTFS image or device, **read-only**, and reports where the layers disagree.
+
+## Checks
+
+| ID | What it compares | Why it matters |
+|---|---|---|
+| `mft_flag_vs_bitmap` | A record's "in use" flag vs the `$MFT`'s own record bitmap (`$MFT:$BITMAP`) | Hidden or resurrected entries, edited MFT, crash damage |
+| `clusters_free_in_bitmap` | Clusters a file's data runs claim vs the volume `$Bitmap` | Bitmap altered to hide data, or corruption; the next write may overwrite it |
+| `cross_allocated` | Two records claiming the same cluster | Manual run-list edits or serious damage |
+| `run_out_of_bounds` | A data run outside the volume | Invalid or forged run list |
+| `bad_fixup` | MFT update-sequence (fix-up) verification | Torn, corrupt or hand-edited records |
+| `mirror_mismatch` | First MFT records vs `$MFTMirr` (low confidence) | Worth a look; crashes can cause it too |
 
 ## Usage
 
 ```
-python3 phantom_trace.py <raw-image.img | \\.\C:>
+python3 phantom_trace.py image.img                 # human-readable
+python3 phantom_trace.py image.img --json          # for scripts and reports
+python3 phantom_trace.py disk.img --offset 1048576 # NTFS partition inside a disk image
 ```
 
-Run it on a raw image (recommended) or a live device as Administrator/root. It is read-only and needs only the Python 3 standard library.
+Standard library only (Python 3.9+). Use a raw image where you can; a live device needs admin/root. It never writes. Exit codes: `0` clean, `1` findings, `2` error.
 
-## What it does
+## How it is tested
 
-1. Parses the NTFS boot sector (cluster size, `$MFT` location).
-2. Reads MFT record 6 (`$Bitmap`) and loads the bitmap's first data run.
-3. Walks up to the first 10,000 MFT records and flags:
-   - `MFT_SAYS_USED_BITMAP_SAYS_FREE`: record marked in use but the bitmap bit is clear.
-   - `MFT_SAYS_FREE_BITMAP_SAYS_USED`: record marked free but the bitmap bit is set.
+The test suite builds **real NTFS volumes** with `mkntfs`/`ntfscp`, then makes controlled changes and checks the result:
+
+| Scenario | Expected |
+|---|---|
+| Fresh volume with 24 files; a second with 700 files | no findings (no false positives) |
+| Clear a file's clusters in `$Bitmap` | `clusters_free_in_bitmap` |
+| Flip an in-use record to "deleted" in its header only | `mft_flag_vs_bitmap` |
+| Point one file's run at another file's clusters | `cross_allocated` |
+| Corrupt a record's fix-up bytes | `bad_fixup` |
+| Alter a `$MFTMirr` record | `mirror_mismatch` |
+
+Run them with `python3 -m unittest discover -s tests -v` (needs `ntfs-3g` for the image tools).
 
 ## Known limitations
 
-- The current comparison maps MFT record number `i` straight to bit `i` of `$Bitmap`. `$Bitmap` tracks **cluster** allocation, while record allocation lives in the `$MFT`'s own `$BITMAP` attribute, so this needs reworking before the results mean much. A sounder check compares each in-use record's data runs against the cluster bitmap.
-- Assumes 1024-byte MFT records and reads only the first `$Bitmap` data run.
-- Scans at most 10,000 records.
+- The test images were made with the ntfs-3g tools and tampered with by this project's own helper. They have not yet been checked against volumes formatted and used by Windows, or against known real-world anti-forensic tooling. Treat a finding as a lead to verify with another tool (for example The Sleuth Kit), not as proof.
+- A heavily fragmented `$MFT` that uses an `$ATTRIBUTE_LIST` is only read from its first extent (the tool warns when it sees this).
+- Compressed and sparse files: sparse runs are skipped; compressed streams are not checked in depth.
+- Only the unnamed and named non-resident attributes in in-use records are checked; `$LogFile` and `$UsnJrnl` analysis are not implemented.
 
 ## Roadmap
 
-- Compare against the `$MFT` `$BITMAP` attribute and per-file data runs
-- Detect record size and `$MFT` length from the boot sector
-- Full runlist handling and fragmented `$Bitmap`
-- Test images and a regression suite
+- Validate against Windows-made images and real tampering tools
+- `$ATTRIBUTE_LIST` and fragmented-MFT support
+- Timeline output (CSV / bodyfile) and `$STANDARD_INFORMATION` vs `$FILE_NAME` timestamp comparison
+- Compare results with The Sleuth Kit and MFTECmd on shared images
+
+## Licence
+
+Not set yet. Add one before others reuse the code.
